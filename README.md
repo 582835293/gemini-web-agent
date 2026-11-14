@@ -1,7 +1,27 @@
 # Gemini Web-Agent Skill
 
 > **A multi-site, multi-modal quota orchestration Skill for Antigravity & Gemini-based agents.**  
-> 专为 **Google AI Pro / Gemini Pro** 与 **Antigravity** 用户打造的**三站点全模态免费额度调度 Skill**：优先通过 **AgentLimb MCP**（永久免弹窗操控已登录外部 Chrome），或备用 **Playwright CDP CLI 脚本**，统筹调度 **`aistudio.google.com`**、**`flow.google.com`** 与 **`gemini.google.com`**，最大化节省本地 5 小时与周配额。
+> 专为 **Google AI Pro（含 Jio / Pixel 权益等）** 与 **Antigravity** 用户打造的**三站点全模态免费额度调度 Skill**：优先通过 **AgentLimb MCP**（永久免弹窗操控已登录外部 Chrome），或备用 **Playwright CDP CLI 脚本**，统筹调度 **`aistudio.google.com`**、**`flow.google.com`** 与 **`gemini.google.com`**。
+>
+> **特别针对 Jio 会员 / 部分 Pro 账号**：当你的本地 Antigravity 客户端只给了 `3.8 Flash`、用不到 **`4 Hydrogen` / `4 Argon`**，或者本地 5 小时/周配额提前见底时，可用本 Skill 让本地 AI **通过网页端“曲线救国”直接调用满血 `4 Hydrogen` 与 `4 Argon`**，顺便分流生图、视频、作曲、配音与整站 Build 源码导出。
+
+---
+
+## 🤖 让你的 AI 一键自动配置 / Zero-Touch Setup for AI Agents
+
+只要你电脑上的 AI Agent（**Antigravity / Gemini CLI / Claude Code / Cursor / Codex**）能访问网络或本地终端，**直接把下面这句话发给你的 AI，它就会自动帮你拉取并配好全部环境**：
+
+```text
+请帮我拉取并自动配置这个 Skill：https://github.com/582835293/gemini-web-agent
+（克隆后运行 python scripts/setup_skill.py --auto，并按输出的 JSON 检查浏览器通道状态）
+```
+
+你也可以手动执行两条命令完成零配置初始化：
+```bash
+git clone https://github.com/582835293/gemini-web-agent.git
+cd gemini-web-agent && python scripts/setup_skill.py --auto
+```
+`setup_skill.py` 会自动完成：① 同步 Skill 至全球目录（如 `~/.gemini/config/skills/gemini-web-agent`）；② 创建独立 `.venv` 并安装 `playwright`、`Pillow`（不下载 300MB 冗余浏览器）；③ 自动探测本机 **AgentLimb MCP** 与 **Chrome 调试端口** 状态并输出 JSON 报告。
 
 ---
 
@@ -10,16 +30,16 @@
 1. **三站点免费与独立配额池统筹**
    - **`aistudio.google.com`（Playground & Build，`key_off` 网页免费额度）**
      - 文本推理 / 长代码与 1M 长输出：`4 Hydrogen`（快、轻耗） / `4 Argon`（深度规划） / `Deep Research`（带 Search + URL context）
-     - 视觉生图 / 改图：`Nano Banana 2.1`（`gemini-nano-banana-2.1`）
+     - 视觉生图 / 改图：`Nano Banana 2.1`（`gemini-nano-banana-2.1`，Flow 日限用完后接力兜底）
      - 视频生成：`Omni 1.2 Flash` / `Omni 1.1 Flash`
      - 完整歌曲生成：`Lyria 3.5`（直接导出完整 MP3）
      - 语音合成与多角色配音：`Gemini 3.8 Flash TTS`（直接导出 WAV）
      - 整站前端工程生成与导出：`AI Studio Build`（支持 React / Next.js / Angular / Android，可下载 ZIP / Push to GitHub）
    - **`flow.google.com`（Google Flow 独立点数池）**
-     - `Nano Banana 2.1` 生图：**0 点数消耗**，支持直接下载 `1K 原始尺寸` 或 `2K 已高清重塑`
+     - `Nano Banana 2.1` 生图：**0 点数消耗（每日有数十张免费限额，默认按 `x1` 生成省着用）**，支持直接下载 `1K 原始尺寸` 或 `2K 已高清重塑`
      - `Omni 1.2 Flash` / `Veo 3.1 - Lite` 生视频：使用独立每月 Flow 点数池，不消耗本地 coding 配额
    - **`gemini.google.com/app`（Pro 网页主配额 + 异步 Task）**
-     - 支持对话模式与异步 `任务 (Task)` 模式、Canvas、制作音乐与 Deep Research
+     - 支持对话模式与异步 `任务 (Task)` 模式、完整 `4 Hydrogen` / `4 Argon` 模型、Canvas、制作音乐与 Deep Research
 2. **双通道执行架构**
    - **通道 A（首选）：AgentLimb MCP** — 复用你已登录的外部 Chrome（跨重启永久免弹窗授权，直接 DOM/JS 注入与 Blob/Base64 产物落盘）。
    - **通道 B（备用）：Playwright CDP CLI（[`scripts/gemini_web.py`](scripts/gemini_web.py)）** — 通过 Chrome DevTools 调试端口执行多端用量巡检、对话、异步任务、生图、生视频、作曲、TTS 与 Build 工程导出。
@@ -34,10 +54,11 @@
 
 ```text
 gemini-web-agent/
-├── SKILL.md                  # Agent 技能核心定义与三站点调度/DOM 规范
+├── SKILL.md                  # Agent 技能核心定义与自动部署/三站点调度规范
 ├── references/
 │   └── agentlimb.md          # AgentLimb MCP 日常调用要点备忘
 ├── scripts/
+│   ├── setup_skill.py        # AI 一键自动安装、建 .venv 与通道自检脚本
 │   ├── gemini_web.py         # Playwright CDP 备用全功能 CLI 脚本
 │   └── slice_sprites.py      # 游戏/UI 精灵拼图自动切图工具
 ├── requirements.txt          # Python 依赖（playwright, Pillow）
@@ -46,7 +67,9 @@ gemini-web-agent/
 
 ---
 
-## 快速安装 / Quick Start
+## 手动配置详情 / Manual Setup (Optional)
+
+> 如已运行上方 `python scripts/setup_skill.py --auto`，以下手动步骤可全部跳过。
 
 ### 1. 安装 Skill 到本地 Agent 目录
 

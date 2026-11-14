@@ -15,7 +15,25 @@ description: >-
 
 ---
 
+## 0. 给拉取者的 AI 助手：零配置自动部署协议 (Auto-Setup Protocol)
+
+当用户让你配置或启用本 Skill 时，若发现当前环境尚未安装本技能或缺少 `.venv` 依赖，请你**直接执行以下一键初始化脚本**（纯 Python 标准库启动，无需事先安装依赖，会自动同步到 `~/.gemini/config/skills/gemini-web-agent` 并创建 `.venv`、检查 `AgentLimb` MCP 与 Chrome CDP 状态、最后输出 JSON 诊断）：
+
+```bash
+python scripts/setup_skill.py --auto
+```
+
+- 读取脚本输出的 JSON：
+  - 若 `channel_a_agentlimb.configured == true`：直接通过 `agentlimb` MCP 控制外部 Chrome（推荐首选）。
+  - 若 `channel_a_agentlimb.configured == false` 且 `channel_b_cdp.cdp_active == true`：直接使用 `venv.venv_python` 搭配 `cli_script` 走 Chrome CDP 备用通道。
+  - 若两通道均未开启：向用户展示 `next_actions` 提示其安装 `AgentLimb` 或使用脚本检测到的 Chrome 路径带 `--remote-debugging-port=9222` 启动一次即可。
+
+---
+
 ## 一、 全渠道能力矩阵与最优调度优先级
+
+> **核心痛点场景（含 Jio 会员 / 部分 AI Pro 账号“曲线救国”）**：
+> 部分免费/合作渠道（如 Jio 赠送的 Google AI Pro 会员）或旧版客户端中，Antigravity 本地仅开放 `3.8 Flash`、缺乏 `4 Hydrogen` / `4 Argon`，或 5 小时滚窗 / Argon 独立周额度耗尽。但只要你在外部 Chrome 登录了对应 Google 账号，即可通过本 Skill **直接调用网页端与 AI Studio（`key_off`）完整满血的 `4 Hydrogen` 与 `4 Argon` 协助完成编码、规划与多模态任务**，彻底绕开本地模型缺失与 5 小时限流！
 
 ### 1. 七大任务场景调度总表
 
@@ -23,7 +41,7 @@ description: >-
 | :--- | :--- | :--- | :--- |
 | **日常推理 / 1M 长输出 / 带搜索与代码执行** | `aistudio.google.com/prompts/new_chat?model=gemini-4-hydrogen`（快、免 `gemini.google.com` 额度） | `gemini.google.com/app`（对话 / `任务` 异步 Agent - `4 Hydrogen`） | AI Studio **`key_off` 网页免费额度**；Gemini 走网页主额度 |
 | **复杂架构规划 / 深度研究** | `aistudio.google.com/prompts/new_chat?model=gemini-4-argon` 或 `deep-research-preview-04-2026` / `deep-research-max-preview-04-2026` | `gemini.google.com/app`（`4 Argon` / `任务` / `Deep Research`） | AI Studio **`key_off` 网页免费额度**（Deep Research 自带 Search + URL context） |
-| **图片生成与多轮编辑** | `flow.google.com`（`Nano Banana 2.1`，**消耗 0 点数**，支持 `2K 已高清重塑` 下载） | `aistudio.google.com/prompts/new_chat?model=gemini-nano-banana-2.1`（`key_off` 免费，支持 Search 接地）/ `gemini.google.com` `制作图片` | Flow **0 点数无限用**；AI Studio **`key_off` 网页免费额度** |
+| **图片生成与多轮编辑** | `flow.google.com`（`Nano Banana 2.1`，**消耗 0 点数**，支持 `2K 已高清重塑` 下载） | `aistudio.google.com/prompts/new_chat?model=gemini-nano-banana-2.1`（`key_off` 免费，支持 Search 接地）/ `gemini.google.com` `制作图片` | Flow **0 点数（每日限数十张，默认用 `x1` 省着用）**；超限后由 AI Studio **`key_off` 免费额度** 接力 |
 | **视频生成（含原生音频）** | `aistudio.google.com/prompts/new_chat?model=gemini-omni-1.2-flash`（最长 15s 带原生音频，`key_off` 免费） | `flow.google.com`（`Omni 1.2 Flash` 8~24 点 / `Veo 3.1 - Lite` 10 点）/ `gemini.google.com` `制作视频` | AI Studio **`key_off` 免费且不扣 Flow 点数**；Flow 走独立点数池 |
 | **音乐生成（BGM / 完整歌曲）** | `aistudio.google.com/new_music?model=lyria-3.5`（实测 `key_off` 免费生成 ~3 分钟完整 MP3，含 Text / Composer 模式） | `aistudio.google.com/new_music?model=lyria-3-pro-preview` / `lyria-3-clip-preview` / `gemini.google.com` `制作音乐` / `Flow Music` | AI Studio **`key_off` 网页免费额度** |
 | **语音合成 (TTS) / 录音转写 (STT) / Live 同传** | `aistudio.google.com/generate-speech?model=gemini-3.8-flash-tts`（Voice Design 捏音色、双人剧本、`<gasp>`/`<laugh>` 标签） | 转写：`?model=gemini-3.5-transcribe`；实时同传：`aistudio.google.com/live?model=gemini-3.8-live` / `gemini-3.5-live-translate-preview` | 均走 AI Studio **`key_off` 网页免费额度**（WAV base64 直接可下） |
