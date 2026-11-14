@@ -1,0 +1,160 @@
+---
+name: gemini-web-agent
+description: >-
+  利用外部 Chrome 调度三大网页站点全模态渠道分担任务、最大化节省本地 Antigravity 配额：
+  (1) aistudio.google.com 全模型免 Key 免费额度（key_off）：覆盖文本推理/1M长输出（4 Hydrogen/Argon）、生图改图（Nano Banana 2.1）、生视频（Omni 1.2 Flash/1.1 Flash）、完整歌曲（Lyria 3.5）、语音配音与剧本对话（Gemini 3.8 Flash TTS）、录音转写（3.5 Transcribe）、Live 实时对话同传（3.8 Live/3.5 Live Translate）、Deep Research 与 Build 整站应用导出；
+  (2) flow.google.com 独立点数池（Nano Banana 2.1 生图 0 点数 + 2K 高清重塑、Omni 1.2 Flash / Veo 3.1 - Lite 生视频）；
+  (3) gemini.google.com 对话模式、异步任务模式 (Task)、制作音乐/图片/视频、Canvas 与 Deep Research。
+  激活后先检测各端额度并按需对比本地额度，询问用户要使用的站点、模式与模型后，再优先通过 AgentLimb MCP（或备用 gemini_web.py）调度外部 Chrome。
+  当用户提到“网页端 Gemini”、“Google Flow”、“Flow”、“AI Studio”、“Playground”、“Build模式”、“Lyria”、“TTS配音”、“生图”、“生视频”、“生音乐”、“利用网页版额度”、“省额度”、“任务模式”、“异步 agent”时激活。
+---
+
+# Gemini Web-Agent（三站点全渠道与多模态额度调度）
+
+优先通过 **AgentLimb MCP**（永久免弹窗操控已登录外部 Chrome），或备用脚本 [gemini_web.py](scripts/gemini_web.py)，统筹调度 **`aistudio.google.com`**、**`flow.google.com`** 与 **`gemini.google.com`**。
+
+---
+
+## 一、 全渠道能力矩阵与最优调度优先级
+
+### 1. 七大任务场景调度总表
+
+| 任务场景 | 首选渠道（URL & 模型） | 次选 / 补充渠道 | 额度归属与说明 |
+| :--- | :--- | :--- | :--- |
+| **日常推理 / 1M 长输出 / 带搜索与代码执行** | `aistudio.google.com/prompts/new_chat?model=gemini-4-hydrogen`（快、免 `gemini.google.com` 额度） | `gemini.google.com/app`（对话 / `任务` 异步 Agent - `4 Hydrogen`） | AI Studio **`key_off` 网页免费额度**；Gemini 走网页主额度 |
+| **复杂架构规划 / 深度研究** | `aistudio.google.com/prompts/new_chat?model=gemini-4-argon` 或 `deep-research-preview-04-2026` / `deep-research-max-preview-04-2026` | `gemini.google.com/app`（`4 Argon` / `任务` / `Deep Research`） | AI Studio **`key_off` 网页免费额度**（Deep Research 自带 Search + URL context） |
+| **图片生成与多轮编辑** | `flow.google.com`（`Nano Banana 2.1`，**消耗 0 点数**，支持 `2K 已高清重塑` 下载） | `aistudio.google.com/prompts/new_chat?model=gemini-nano-banana-2.1`（`key_off` 免费，支持 Search 接地）/ `gemini.google.com` `制作图片` | Flow **0 点数无限用**；AI Studio **`key_off` 网页免费额度** |
+| **视频生成（含原生音频）** | `aistudio.google.com/prompts/new_chat?model=gemini-omni-1.2-flash`（最长 15s 带原生音频，`key_off` 免费） | `flow.google.com`（`Omni 1.2 Flash` 8~24 点 / `Veo 3.1 - Lite` 10 点）/ `gemini.google.com` `制作视频` | AI Studio **`key_off` 免费且不扣 Flow 点数**；Flow 走独立点数池 |
+| **音乐生成（BGM / 完整歌曲）** | `aistudio.google.com/new_music?model=lyria-3.5`（实测 `key_off` 免费生成 ~3 分钟完整 MP3，含 Text / Composer 模式） | `aistudio.google.com/new_music?model=lyria-3-pro-preview` / `lyria-3-clip-preview` / `gemini.google.com` `制作音乐` / `Flow Music` | AI Studio **`key_off` 网页免费额度** |
+| **语音合成 (TTS) / 录音转写 (STT) / Live 同传** | `aistudio.google.com/generate-speech?model=gemini-3.8-flash-tts`（Voice Design 捏音色、双人剧本、`<gasp>`/`<laugh>` 标签） | 转写：`?model=gemini-3.5-transcribe`；实时同传：`aistudio.google.com/live?model=gemini-3.8-live` / `gemini-3.5-live-translate-preview` | 均走 AI Studio **`key_off` 网页免费额度**（WAV base64 直接可下） |
+| **整站前端 / Android 原型构建** | `aistudio.google.com/apps`（Build：`DEFAULT` / `PLAN` / `MAX`；`React` / `Next.js` / `Angular` / `Android`） | `gemini.google.com` `Canvas`（单页交互原型） | 走 Google AI Pro 订阅网页额度，导出 ZIP / Open in Antigravity / GitHub |
+
+---
+
+### 2. AI Studio Playground 全分类可用模型速查表
+
+> 所有模型均可直接通过 `https://aistudio.google.com/prompts/new_chat?model=<model-id>` 路由直达（音乐与 TTS/Live 会自动跳至 `/new_music`、`/generate-speech`、`/live`）。
+> 除 **`gemini-4-carbon`** 与 **`antigravity-preview-09-2026`** 标记为 **`Paid`**（需绑付费 API Key）外，其余均支持 **`key_off` 网页免费额度**！
+
+| 分类 | 模型显示名 | 直达 `model-id` | 核心用途 / 特点 |
+| :--- | :--- | :--- | :--- |
+| **Gemini（主力推理）** | `Gemini 4 Hydrogen` | `gemini-4-hydrogen` | 日常高频推理、Agentic 编码、长输出默认主力 |
+| | `Gemini 4 Argon` | `gemini-4-argon` | 深度思考、复杂架构规划与高难代码分析 |
+| | `Gemini 4 Carbon` *(Paid)* | `gemini-4-carbon` | 标记 `Paid`，长周期复杂研究/编码（未绑付费 Key 不可免费调用） |
+| | `Gemini 3.8 Flash` | `gemini-3.8-flash` | 强推理 Flash 模型 |
+| | `Gemini Decision 1` | `gemini-decision-1` | 极速校验与 Yes/No/Rubric 评分模型 |
+| | `Gemini 3.5 Flash Lite` / `3.1 Flash Lite` / `3.1 Pro Preview` / `3.6 Flash` / `3 Flash Preview` | `gemini-3.5-flash-lite` 等 | 常规轻量或上一代多模态推理 |
+| | `Gemini Robotics-ER 2` / `Streaming` | `gemini-robotics-er-2-preview` | 空间与视频时序推理 |
+| **Images（生图改图）** | `Nano Banana 2.1` | `gemini-nano-banana-2.1` | 最新原生生图/多轮一致改图，支持 Search & Image Search 接地 |
+| | `Nano Banana Pro` / `2` / `2 Lite` / `Nano Banana` | `gemini-3-pro-image` / `gemini-3.1-flash-image` / `gemini-3.1-flash-lite-image` / `gemini-2.5-flash-image` | 高画质或轻量批量出图 |
+| **Video（视频生成）** | `Gemini Omni 1.2 Flash` | `gemini-omni-1.2-flash` | 文/图/视频生成最高 15s 带原生音频视频（可调比例/时长/360p/24fps） |
+| | `Gemini Omni 1.1 Flash` | `gemini-omni-1.1-flash` | 关键帧控制与场景延展至 30s |
+| **Music（音乐创作）** | `Lyria 3.5` | `lyria-3.5` | 完整歌曲生成（Text / Composer 模式，人声与编曲，~3min MP3） |
+| | `Lyria 3 Pro Preview` / `Clip Preview` | `lyria-3-pro-preview` / `lyria-3-clip-preview` | 复杂曲式编排 / 短音乐片段 |
+| **Audio（语音/转写）** | `Gemini 3.8 Flash TTS` / `3.8 Flash Lite TTS` | `gemini-3.8-flash-tts` / `gemini-3.8-flash-lite-tts` | Voice Design 捏音色、双人剧本对话、语音情绪标签（WAV 导出） |
+| | `Gemini 3.1 Flash TTS` / `2.5 Pro/Flash TTS` | `gemini-3.1-flash-tts-preview` 等 | 多说话人高表现力 TTS |
+| | `Gemini 3.5 Transcribe` | `gemini-3.5-transcribe` | 静态长音频高精结构化转写 |
+| **Live（实时互动）** | `Gemini 3.8 Live` / `Extended Thinking` | `gemini-3.8-live` / `gemini-3.8-live-extended-thinking` | 超低延迟语音/屏幕共享/摄像头实时对话 |
+| | `Gemini 3.5 Live Translate` / `3.5 Transcribe Live` / `3.1 Flash Live` | `gemini-3.5-live-translate-preview` 等 | 70+ 语言同声传译 / 实时流式字幕转写 |
+| **Agents（智能体）** | `Deep Research Preview` / `Max` | `deep-research-preview-04-2026` / `deep-research-max-preview-04-2026` | 异步长程搜索调研与深度综合报告（Google Search + URL context） |
+| | `Antigravity Agent Preview` *(Paid)* | `antigravity-preview-09-2026` | 标记 `Paid` 远端托管代理 |
+| **Gemma（开放权重）** | `Gemma 4 31B IT` / `26B A4B IT` | `gemma-4-31b-it` / `gemma-4-26b-a4b-it` | 开放权重长上下文与 MoE 推理对比测试 |
+
+> **Google Flow 模型备注**：Flow 支持 `Nano Banana 2.1`（0 点数）/ `Nano Banana 2 Lite` / `Nano Banana Pro` 生图，以及 `Omni 1.2 Flash`（`x1`: `360p` 8 点 / `720p` 24 点）与 `Veo 3.1 - Lite`（`x1`: 10 点）生视频（注意 `Omni 1.1 Flash` / `Veo 3.1 - Fast` / `Veo 3.1 - Quality` 在 Flow 中提示 12 月 5 日停用）。Flow 默认生成数量为 `x2`，**务必改选 `x1` 再生成**！
+
+---
+
+## 二、 多端额度联动检测逻辑
+
+1. **网页端 `gemini.google.com/usage` 实时检测**：
+   - 后台开 `tab_new(url="https://gemini.google.com/usage", active=false)` → `wait` `[data-testid="current-usage"]` → `javascript_eval` 读取后立刻 `tab_close`：
+     - 方案：`[data-usage-island-root] header span`
+     - **当前用量**：`[data-testid="current-usage"]`（`已使用 X%` / `重置时间`）
+     - **每周限额**：`[data-testid="weekly-usage"]`（`已使用 Y%` / `重置时间`）
+   - CLI 备用：`python ...\gemini_web.py usage --include-flow`
+   - 兜底：若出现 `[data-test-id="announcement-banner-container"]` / `[role="alert"]` 限流提示，立即切换 AI Studio Playground（`key_off`）或 Google Flow。
+2. **Google Flow（`flow.google.com`）独立点数检测**：
+   - 后台开 `tab_new(url="https://flow.google.com/", active=false)` → 点击 `[aria-label="账号详情"]`（`PRO`）→ 读取 `[role="dialog"]` 内 `X 个 Google Flow 点数` 与 `重置时间` 后 `tab_close`。
+   - CLI 备用：`python ...\gemini_web.py flow-usage`
+3. **AI Studio 用量与免费层级**：
+   - Playground 未选中 API Key（左上工具栏显示 `key_off`）时直接使用 AI Studio 网页免费额度（`Paid` 模型除外）；若绑有 API Key，可在 `/rate-limit` 与 `/usage` 查看免费/付费层级 RPM/TPM/RPD。
+4. **本地 Antigravity 实时额度对比**：
+   ```powershell
+   python "$env:USERPROFILE\.gemini\config\skills\antigravity-quota-monitor\scripts\inspect_antigravity.py"
+   ```
+
+---
+
+## 三、 工作流（按序执行）
+
+### 1. 检测额度 + 先问后用（`ask_question` 确认）
+激活本技能后，**先读取网页端 `/usage`（涉及图片/视频时同步查 Flow 点数）并按需对比本地额度，再用 `ask_question` 汇报额度并确认方案，未获同意前禁止发包**（用户指令已明确入口、模型并授权则直接执行）：
+- **问题 1：本次调度哪个网页端入口与模型？**
+  - `AI Studio 多模态 - Lyria 3.5 完整音乐 / 3.8 TTS 配音 / Omni 1.2 Flash 视频 / Nano Banana 生图（key_off 免费额度）`
+  - `AI Studio Playground - 4 Hydrogen / 4 Argon / Deep Research（key_off 免费额度，1M长输出/带搜索/代码执行）`
+  - `Google Flow (flow.google.com) - Nano Banana 2.1 生图（0 点数）/ Omni 1.2 Flash / Veo 3.1 视频（独立点数）`
+  - `AI Studio Build - 生成完整前端工程并导出（Open in Antigravity / 下载 ZIP）`
+  - `gemini.google.com 对话 / 异步任务 (4 Hydrogen / 4 Argon) 或 Canvas / 制作音乐兜底`
+- **问题 2：确认授权通过外部 Chrome 自动发送、监控并落盘结果？**
+  - `同意，立即调用` / `暂不调用`
+
+### 2. 浓缩上下文
+只提取必要目录、核心代码/报错与输出要求，跳过寒暄。
+
+### 3. 极速调用外部 Chrome（禁止派 `browser` 子代理）
+
+#### 通道 A（首选）：AgentLimb MCP
+
+1. **`aistudio.google.com` 四大工作台（全模态 `key_off` 免费）**：
+   - **通用对话 / 生图 / 生视频 / 研究（`/prompts/new_chat?model=<id>`）**：
+     - 直接导航到带 `?model=<model-id>` 的 URL（如 `gemini-4-hydrogen`、`gemini-4-argon`、`gemini-nano-banana-2.1`、`gemini-omni-1.2-flash`、`deep-research-preview-04-2026`），使用原生 setter + `InputEvent` 写入 `textarea[aria-label="Enter a prompt"]`，等待 `250ms` 后点击非 `.rerun-button` 的 `Run` 按钮。
+     - **重要（虚拟滚动懒渲染）**：完成信号为 `.cdk-live-announcer-element` 出现 `"Response ready."`；提取内容前**务必先 `tab_activate(tabId)` 并 `turns[turns.length-1].scrollIntoView()`**！
+     - 提取产物：文本读 `[data-turn-role="Model"] ms-cmark-node`（或 `.turn-content`）；图片读 `ms-chat-turn img[src^="blob:"]`（过滤 `naturalWidth > 200` 避开水印小图）及 `button[aria-label="Download"]`；视频读 `<ms-video-generation-gallery> video[src^="blob:"]` 及 `button[aria-label="Download video"]`（可直接浏览器上下文 `fetch(blobUrl)` 转 base64 落盘）。
+   - **音乐生成工作台（`/new_music?model=lyria-3.5`）**：
+     - 若处于零状态页先点击 `button.empty-state__title-button` 展开编辑区；可切换 `Text` / `Composer` 模式；向 `textarea[aria-label="Prompt input"]` 注入提示词，**等待 `250ms` 待按钮解除 disabled** 后点击 `button.ctrl-enter-submits`（`Generate`）。
+     - 生成中显示 `Stop composing`；完成后挂载 `<audio src="data:audio/mpeg;base64,...">` 与 `button.download-button[aria-label="Download"]`，解码 base64 直接写 `.mp3` 文件。
+   - **语音合成配音工作台（`/generate-speech?model=gemini-3.8-flash-tts`）**：
+     - 零状态页点击 `mat-card.create-dialog-card`（`Create new dialog`）；可用 `button.voice-chip` 选音色/多说话人；向 `textarea[aria-label="Speech block text"]` 写入文本，**等待 `250ms`** 后点击 `button.ctrl-enter-submits`（`Run`）。
+     - 完成后挂载 `<audio src="data:audio/wav;base64,...">` 与 `button.download-button[aria-label="Download"]`，解码 base64 直接写 `.wav` 文件。
+   - **Build 整站生成与导出（`/apps`）**：
+     - 选模式（`Default` / `Plan` / `Max`）与 `settings` 内模型/框架（`React` / `Next.js` / `Angular` / `Android`），向 `div[aria-label="Describe an app and let Gemini do the rest"]` 注入需求点 `button[aria-label="Send"]`；完成后在 `?showCode=true&showAssistant=true` 点 `button[aria-label="Export options"]` 选择 **`Export to Antigravity`** / **`Download as .zip file`** / **`Push to GitHub`**。
+
+2. **`flow.google.com`（生图 0 点数 / 生视频独立点数）**：
+   - 打开 `https://flow.google.com/` 点击 `新建项目`（或复用 `/project/<id>`），关掉右侧助手栏或点灭底栏 `智能体` 开关切回直出模式，点 `button[aria-label="设置触发器"]`：选 `image 图片` / `videocam 视频`、比例、模型（`Nano Banana 2.1` / `Omni 1.2 Flash` / `Veo 3.1 - Lite`）、分辨率（`360p` / `720p`）并将数量改为 **`x1`**。
+   - 向 `div.ProseMirror[aria-label="您希望创作什么？"]` 填词并点 `button[aria-label="开始生成"]`；完成后在 `.tile-row` 点 `button[aria-label="更多选项"]` 悬停 `下载` 选 `1K 原始尺寸` 或 `2K 已高清重塑`（或取 `flow-content.google` 链接下载）。
+
+3. **`gemini.google.com/app`（对话 / `任务` 异步 Agent / 工具）**：
+   - 切 `<gem-segmented-button>`（`对话` / `任务`）及 `bard-mode-menu-button`（`4 Hydrogen` / `4 Argon`），按需选 `上传和工具`（`制作音乐` / `Canvas` / `Deep Research` / 兜底 `制作图片` / `制作视频`）。
+   - **禁止设 `innerHTML`**（`TrustedHTML` CSP），用 `textContent` + `InputEvent('insertText')` 注入后点 `button[aria-label="发送"]`。
+
+4. **收尾**：调用 `agentlimb:say` 释放面板状态。
+
+#### 通道 B（CLI 备用）：Playwright CDP 脚本（支持三站全模态 + 自动落盘）
+```powershell
+$skillDir = "$env:USERPROFILE\.gemini\config\skills\gemini-web-agent" # 或你的本地仓库路径
+$py = "$skillDir\.venv\Scripts\python.exe"
+$cli = "$skillDir\scripts\gemini_web.py"
+
+# 1. 多端实时额度查询
+& $py $cli usage --include-flow
+& $py $cli flow-usage
+
+# 2. Google Flow（首选 0 点数 2K 生图 / 独立点数生视频）
+& $py $cli flow --media image --model "Nano Banana 2.1" --aspect 16:9 --count 1 --resolution 2K --prompt "提示词" --download-dir "C:\path\to\out"
+& $py $cli flow --media video --model "Omni 1.2 Flash" --aspect 16:9 --resolution 720p --count 1 --prompt "提示词" --download-dir "C:\path\to\out"
+
+# 3. AI Studio Playground 全能直达（文本 / 生图 / 生视频 / Lyria 3.5 MP3 音乐 / 3.8 TTS WAV 配音 / Research）
+& $py $cli playground --model hydrogen --prompt "代码或文本提示词" --raw
+& $py $cli playground --model research --prompt "深度调研主题" --raw
+& $py $cli playground --model nano2.1 --prompt "watercolor illustration of a cozy lantern" --download-dir "C:\path\to\out"
+& $py $cli playground --model omni1.2 --prompt "raindrops glowing on a warm bakery window at night" --download-dir "C:\path\to\out"
+& $py $cli playground --model lyria --prompt "warm cozy solo piano and rain ambience, 100bpm" --download-dir "C:\path\to\out"
+& $py $cli playground --model tts --prompt "欢迎来到雨夜面包店，今晚外面的雨下得好大呀。" --download-dir "C:\path\to\out"
+
+# 4. AI Studio Build & Gemini 网页端对话/异步任务
+& $py $cli build --mode default --model hydrogen --framework React --prompt "需求" --download-dir "C:\path\to\out" --extract
+& $py $cli ask --entry task --model hydrogen --prompt "异步任务提示词" --async-send
+```
+
+### 4. 本地落地与验证
+把回传文本、解压后的 Build 工程或下载的 MP3 / WAV / PNG / MP4 落盘本地并验证可用；网格拼图切图用 [slice_sprites.py](scripts/slice_sprites.py)。
