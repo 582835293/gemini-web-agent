@@ -5,6 +5,8 @@
 >
 > **特别针对 Jio 会员 / 部分 Pro 账号**：当你的本地 Antigravity 客户端只给了 `3.8 Flash`、用不到 **`4 Hydrogen` / `4 Argon`**，或者本地 5 小时/周配额提前见底时，可用本 Skill 让本地 AI **通过网页端“曲线救国”直接调用满血 `4 Hydrogen` 与 `4 Argon`**，顺便分流生图、视频、作曲、配音与整站 Build 源码导出。
 
+> **多客户端通用**：不仅支持 **Antigravity / Gemini CLI**，同样支持 **Claude Code / Codex / Cursor**——将深度推理、1M 长文档调研、前端原型 Build、生图/生视频/作曲/配音等高耗配额任务分流至外部浏览器免费额度池，从而大幅节省你本地 Claude / Codex / Antigravity 的 5 小时滚窗或 API Token。
+
 ---
 
 ## 🤖 让你的 AI 一键自动配置 / Zero-Touch Setup for AI Agents
@@ -43,8 +45,8 @@ cd gemini-web-agent && python scripts/setup_skill.py --auto
 2. **双通道执行架构**
    - **通道 A（首选）：AgentLimb MCP** — 复用你已登录的外部 Chrome（跨重启永久免弹窗授权，直接 DOM/JS 注入与 Blob/Base64 产物落盘）。
    - **通道 B（备用）：Playwright CDP CLI（[`scripts/gemini_web.py`](scripts/gemini_web.py)）** — 通过 Chrome DevTools 调试端口执行多端用量巡检、对话、异步任务、生图、生视频、作曲、TTS 与 Build 工程导出。
-3. **先查后用，额度感知调度**
-   - 激活后支持巡检 `gemini.google.com/usage` 与 `flow.google.com` 独立点数余额，避免盲目撞限流。
+3. **先查后用，额度感知调度（内置 Antigravity 本地双轨与路由检测）**
+   - 激活后支持巡检 `gemini.google.com/usage` 与 `flow.google.com` 独立点数余额，并**内置 [`scripts/inspect_antigravity.py`](scripts/inspect_antigravity.py)**（纯标准库零依赖，可探测本地 Antigravity Connect-RPC 双轨配额、SQLite `gen_metadata` 后端实际路由与四维 Token 消耗；Claude Code / Codex 等客户端自动跳过本地对比，直接分流省额度）。
 4. **内置精灵图切分工具（[`scripts/slice_sprites.py`](scripts/slice_sprites.py)）**
    - 将 AI 生成的网格拼图 / 精灵表按行列或自动透明包围盒切分为独立 PNG 素材。
 
@@ -60,6 +62,7 @@ gemini-web-agent/
 ├── scripts/
 │   ├── setup_skill.py        # AI 一键自动安装、建 .venv 与通道自检脚本
 │   ├── gemini_web.py         # Playwright CDP 备用全功能 CLI 脚本
+│   ├── inspect_antigravity.py # 内置 Antigravity 本地双轨配额、后端路由与 Token 消耗检测脚本
 │   └── slice_sprites.py      # 游戏/UI 精灵拼图自动切图工具
 ├── requirements.txt          # Python 依赖（playwright, Pillow）
 └── README.md
@@ -105,9 +108,10 @@ python -m venv .venv
 $py = ".\.venv\Scripts\python.exe"
 $cli = ".\scripts\gemini_web.py"
 
-# 1. 多端实时额度巡检（Gemini 网页主额度 + Google Flow 独立点数）
+# 1. 多端实时额度巡检（Gemini 网页主额度 + Google Flow 独立点数 + Antigravity 本地双轨对比）
 & $py $cli usage --include-flow
 & $py $cli flow-usage
+python .\scripts\inspect_antigravity.py --markdown   # 仅 Antigravity 环境按需对比本地 5h/周配额与路由
 
 # 2. Google Flow：0 点数 Nano Banana 2.1 生图并下载 2K 高清 / 独立点数生视频
 & $py $cli flow --media image --model "Nano Banana 2.1" --aspect 16:9 --count 1 --resolution 2K --prompt "a glowing cyberpunk energy core" --download-dir "./out"

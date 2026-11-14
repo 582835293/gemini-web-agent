@@ -38,6 +38,7 @@ def detect_target_skill_dir(source_root: Path, explicit_target: str = "") -> Pat
         home / ".gemini" / "skills",
         home / ".agents" / "skills",
         home / ".claude" / "skills",
+        home / ".codex" / "skills",
         home / ".cursor" / "skills",
     ]
     resolved_src = source_root.resolve()
@@ -131,13 +132,47 @@ def ensure_venv_and_deps(skill_dir: Path, skip_pip: bool = False) -> dict:
     }
 
 
+def _has_enabled_agentlimb_json(data: dict) -> bool:
+    servers = data.get("mcpServers", {})
+    if isinstance(servers, dict) and "agentlimb" in servers:
+        if not servers["agentlimb"].get("disabled", False):
+            return True
+    projects = data.get("projects", {})
+    if isinstance(projects, dict):
+        for proj_cfg in projects.values():
+            if not isinstance(proj_cfg, dict):
+                continue
+            p_servers = proj_cfg.get("mcpServers", {})
+            if isinstance(p_servers, dict) and "agentlimb" in p_servers:
+                if not p_servers["agentlimb"].get("disabled", False):
+                    return True
+    return False
+
+
+def _has_enabled_agentlimb_toml(raw_text: str) -> bool:
+    try:
+        import tomllib
+        data = tomllib.loads(raw_text)
+        mcp_servers = data.get("mcp_servers", {})
+        if isinstance(mcp_servers, dict) and "agentlimb" in mcp_servers:
+            entry = mcp_servers["agentlimb"]
+            if isinstance(entry, dict):
+                return entry.get("enabled", True) is not False
+            return True
+    except Exception:
+        pass
+    return "[mcp_servers.agentlimb]" in raw_text
+
+
 def detect_agentlimb_mcp() -> dict:
     """扫描本机常见 AI 客户端 MCP 配置，检查是否已配置 agentlimb。"""
     home = Path.home()
     mcp_files = [
         home / ".gemini" / "config" / "mcp_config.json",
         home / ".gemini" / "antigravity" / "mcp_config.json",
+        home / ".claude.json",
         home / ".claude" / "claude_desktop_config.json",
+        home / ".codex" / "config.toml",
         home / ".cursor" / "mcp.json",
     ]
     if platform.system().lower().startswith("win"):
@@ -151,10 +186,14 @@ def detect_agentlimb_mcp() -> dict:
             continue
         found_configs.append(str(path))
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            servers = data.get("mcpServers", {})
-            if "agentlimb" in servers and not servers["agentlimb"].get("disabled", False):
-                agentlimb_configured_in.append(str(path))
+            raw = path.read_text(encoding="utf-8")
+            if path.suffix == ".toml":
+                if _has_enabled_agentlimb_toml(raw):
+                    agentlimb_configured_in.append(str(path))
+            else:
+                data = json.loads(raw)
+                if isinstance(data, dict) and _has_enabled_agentlimb_json(data):
+                    agentlimb_configured_in.append(str(path))
         except Exception:
             pass
 
@@ -258,6 +297,7 @@ def main() -> None:
         "installed_skill_dir": str(target_dir),
         "files_synced_to_global": synced,
         "cli_script": str(target_dir / "scripts" / "gemini_web.py"),
+        "quota_monitor_script": str(target_dir / "scripts" / "inspect_antigravity.py"),
         "venv": venv_info,
         "channel_a_agentlimb": agentlimb_info,
         "channel_b_cdp": cdp_info,

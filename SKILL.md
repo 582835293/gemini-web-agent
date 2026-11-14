@@ -96,17 +96,19 @@ python scripts/setup_skill.py --auto
    - CLI 备用：`python ...\gemini_web.py flow-usage`
 3. **AI Studio 用量与免费层级**：
    - Playground 未选中 API Key（左上工具栏显示 `key_off`）时直接使用 AI Studio 网页免费额度（`Paid` 模型除外）；若绑有 API Key，可在 `/rate-limit` 与 `/usage` 查看免费/付费层级 RPM/TPM/RPD。
-4. **本地 Antigravity 实时额度对比**：
+4. **本地 Antigravity 实时额度与底层路由对比（内置脚本，仅 Antigravity 环境按需执行；Claude Code / Codex / Cursor 等其他客户端请直接跳过此步）**：
    ```powershell
-   python "$env:USERPROFILE\.gemini\config\skills\antigravity-quota-monitor\scripts\inspect_antigravity.py"
+   # 直接调用本 Skill 内置的 inspect_antigravity.py（纯 Python 标准库，无需额外安装外部监控技能）
+   python "$env:USERPROFILE\.gemini\config\skills\gemini-web-agent\scripts\inspect_antigravity.py" --markdown
    ```
+   > macOS / Linux 可直接执行本 Skill 目录下的 `python3 scripts/inspect_antigravity.py --markdown`。非 Antigravity 客户端（如 Claude Code / Codex）跳过本地对比，仅巡检网页端 `/usage` 与 Flow 点数即可。
 
 ---
 
 ## 三、 工作流（按序执行）
 
-### 1. 检测额度 + 先问后用（`ask_question` 确认）
-激活本技能后，**先读取网页端 `/usage`（涉及图片/视频时同步查 Flow 点数）并按需对比本地额度，再用 `ask_question` 汇报额度并确认方案，未获同意前禁止发包**（用户指令已明确入口、模型并授权则直接执行）：
+### 1. 检测额度 + 先问后用（向用户确认）
+激活本技能后，**先读取网页端 `/usage`（涉及图片/视频时同步查 Flow 点数）并在 Antigravity 环境中按需对比本地额度，再向用户汇报额度并确认方案（Antigravity 用 `ask_question`、Claude Code 用 `AskUserQuestion`、Codex 等直接对话确认），未获同意前禁止发包**（用户指令已明确入口、模型并授权则直接执行）：
 - **问题 1：本次调度哪个网页端入口与模型？**
   - `AI Studio 多模态 - Lyria 3.5 完整音乐 / 3.8 TTS 配音 / Omni 1.2 Flash 视频 / Nano Banana 生图（key_off 免费额度）`
   - `AI Studio Playground - 4 Hydrogen / 4 Argon / Deep Research（key_off 免费额度，1M长输出/带搜索/代码执行）`
