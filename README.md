@@ -47,8 +47,10 @@ cd gemini-web-agent && python scripts/setup_skill.py --auto
    - **通道 B（备用）：Playwright CDP CLI（[`scripts/gemini_web.py`](scripts/gemini_web.py)）** — 通过 Chrome DevTools 调试端口执行多端用量巡检、对话、异步任务、生图、生视频、作曲、TTS 与 Build 工程导出。
 3. **先查后用，额度感知调度（内置 Antigravity 本地双轨与路由检测）**
    - 激活后支持巡检 `gemini.google.com/usage` 与 `flow.google.com` 独立点数余额，并**内置 [`scripts/inspect_antigravity.py`](scripts/inspect_antigravity.py)**（纯标准库零依赖，可探测本地 Antigravity Connect-RPC 双轨配额、SQLite `gen_metadata` 后端实际路由与四维 Token 消耗；Claude Code / Codex 等客户端自动跳过本地对比，直接分流省额度）。
-4. **内置精灵图切分工具（[`scripts/slice_sprites.py`](scripts/slice_sprites.py)）**
-   - 将 AI 生成的网格拼图 / 精灵表按行列或自动透明包围盒切分为独立 PNG 素材。
+4. **附带实战示例切图脚本（[`scripts/slice_sprites.py`](scripts/slice_sprites.py)，可选参考）**
+   - 作者在录制演示视频、用外部免费额度生成视觉小说《雨夜星屑茶屋》时顺手保留的示例配套脚本（用于把 Flow 一次生成的角色多表情拼图切分成独立透明立绘）；**非额度调度核心必需**，保留在此方便想模仿“全流程做游戏 / 视觉小说”玩法的同学直接参考。
+
+> 📺 **B 站实战讲解视频**：https://www.bilibili.com/video/BV1cZsV6MEVb （含零配置部署演示、多模态素材流水线与真实额度消耗对比）
 
 ---
 
@@ -63,7 +65,7 @@ gemini-web-agent/
 │   ├── setup_skill.py        # AI 一键自动安装、建 .venv 与通道自检脚本
 │   ├── gemini_web.py         # Playwright CDP 备用全功能 CLI 脚本
 │   ├── inspect_antigravity.py # 内置 Antigravity 本地双轨配额、后端路由与 Token 消耗检测脚本
-│   └── slice_sprites.py      # 游戏/UI 精灵拼图自动切图工具
+│   └── slice_sprites.py      # [示例配套] 视觉小说/游戏立绘网格切图脚本（B站演示同款，可选）
 ├── requirements.txt          # Python 依赖（playwright, Pillow）
 └── README.md
 ```
