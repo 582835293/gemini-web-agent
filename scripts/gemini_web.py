@@ -26,6 +26,70 @@ from playwright.sync_api import sync_playwright
 
 DAEMON_HOST = "127.0.0.1"
 DAEMON_PORT = 19222
+SESSION_STATE_FILE = Path.home() / ".gemini" / "gemini-web-agent-sessions.json"
+
+
+def _load_last_session(site: str) -> str:
+    """读取最近一次活跃的会话 URL（按站点 gemini / aistudio）。"""
+    try:
+        if SESSION_STATE_FILE.exists():
+            data = json.loads(SESSION_STATE_FILE.read_text(encoding="utf-8"))
+            url = str(data.get(site, "")).strip()
+            if url.startswith("https://"):
+                return url
+    except Exception:
+        pass
+    return ""
+
+
+def _save_last_session(site: str, url: str) -> None:
+    """仅保存具体会话 URL（跳过空白首页和 new_chat），方便长任务跨轮/跨重启续接。"""
+    if not url or not url.startswith("https://"):
+        return
+    if site == "gemini" and not re.search(r"gemini\.google\.com/app/[^/?#]+", url):
+        return
+    if site == "aistudio" and (
+        "/new_chat" in url or not re.search(r"aistudio\.google\.com/prompts/[^/?#]+", url)
+    ):
+        return
+    try:
+        SESSION_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if SESSION_STATE_FILE.exists():
+            try:
+                data = json.loads(SESSION_STATE_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        data[site] = url
+        SESSION_STATE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _validate_files(files: list[str] | None) -> list[str]:
+    """校验待上传文件路径存在并转为绝对路径列表。"""
+    if not files:
+        return []
+    resolved: list[str] = []
+    for raw in files:
+        p = Path(raw).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(f"待上传文件不存在: {raw}")
+        resolved.append(str(p))
+    return resolved
+
+
+def _read_system_text(system_instruction: str, system_file: str) -> str:
+    """合并文本形式与本地文件形式的 System Instructions。"""
+    parts: list[str] = []
+    if system_file:
+        p = Path(system_file).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(f"系统指令文件不存在: {system_file}")
+        parts.append(p.read_text(encoding="utf-8"))
+    if system_instruction:
+        parts.append(system_instruction)
+    return "\n\n".join(part for part in parts if part)
 
 MODEL_OPTIONS = {
     "flash-lite": ("bard-mode-option-8c46e95b1a07cecc", "Flash-Lite"),
@@ -62,9 +126,9 @@ def wait_gemini_ready(page, timeout_ms: int = 25000) -> None:
 
 
 def get_gemini_page(browser, new_tab: bool = True, tab_url_hint: str = ""):
-    """获取或打开 Gemini 标签页。new_tab=True 时优先复用空白主页。"""
+    """获取或打开 Gemini 标签页；复用模式支持按历史会话 URL 重连。"""
     context = browser.contexts[0] if browser.contexts else browser.new_context()
-    if new_tab:
+    if new_tab and not tab_url_hint:
         for page in context.pages:
             url = page.url or ""
             if re.match(r"^https://gemini\.google\.com/app(?:/?(?:\?.*)?)$", url):
@@ -78,21 +142,60 @@ def get_gemini_page(browser, new_tab: bool = True, tab_url_hint: str = ""):
         wait_gemini_ready(page)
         return page
 
-    for page in context.pages:
-        url = page.url or ""
-        if "gemini.google.com" in url and (not tab_url_hint or tab_url_hint in url):
-            page.bring_to_front()
-            wait_gemini_ready(page)
-            return page
+    # 复用已有对话页：优先匹配已打开的标签页（未指定 hint 时优先选已有会话 /app/<id>）
+    matched_pages = [
+        p
+        for p in context.pages
+        if "gemini.google.com" in (p.url or "") and (not tab_url_hint or tab_url_hint in (p.url or ""))
+    ]
+    if matched_pages:
+        if not tab_url_hint:
+            matched_pages.sort(
+                key=lambda p: 0 if re.search(r"gemini\.google\.com/app/[^/?#]+", p.url or "") else 1
+            )
+        page = matched_pages[0]
+        page.bring_to_front()
+        wait_gemini_ready(page)
+        return page
 
-    if tab_url_hint:
-        raise RuntimeError(f"未找到匹配的 Gemini 标签页: {tab_url_hint}")
+    target_url = ""
+    if tab_url_hint.startswith("https://"):
+        target_url = tab_url_hint
+    else:
+        last_url = _load_last_session("gemini")
+        if last_url and (not tab_url_hint or tab_url_hint in last_url):
+            target_url = last_url
+        elif tab_url_hint:
+            raise RuntimeError(f"未找到匹配的 Gemini 标签页: {tab_url_hint}")
 
     page = context.new_page()
     page.bring_to_front()
-    page.goto("https://gemini.google.com/app", wait_until="commit", timeout=30000)
+    page.goto(target_url or "https://gemini.google.com/app", wait_until="commit", timeout=30000)
     wait_gemini_ready(page)
     return page
+
+
+def _gemini_attach_files(page, file_paths: list[str]) -> list[str]:
+    """在 gemini.google.com/app 通过 Playwright FileChooser 接管无弹窗上传本地文件。"""
+    if not file_paths:
+        return []
+    tools_btn = page.locator('button[aria-label="上传和工具"], button[aria-label*="Upload and tools" i]').first
+    tools_btn.wait_for(state="visible", timeout=10000)
+    tools_btn.click()
+    page.wait_for_timeout(400)
+
+    upload_item = page.locator(
+        '.cdk-overlay-pane gem-menu-item:has-text("上传文件"), '
+        '.cdk-overlay-pane gem-menu-item:has-text("Upload files"), '
+        '.cdk-overlay-pane button[aria-label*="上传文件"], '
+        '.cdk-overlay-pane button[aria-label*="Upload files" i]'
+    ).first
+    upload_item.wait_for(state="visible", timeout=10000)
+    with page.expect_file_chooser(timeout=15000) as fc_info:
+        upload_item.click()
+    fc_info.value.set_files(file_paths)
+    page.wait_for_timeout(1200)
+    return [Path(p).name for p in file_paths]
 
 
 def select_entry_mode(page, entry: str) -> None:
@@ -237,12 +340,14 @@ def execute_ask(
     tab_url_hint: str = "",
     async_send: bool = False,
     timeout_sec: int = 180,
+    files: list[str] | None = None,
 ) -> dict:
-    """在外部 Chrome 的 Gemini 网页中执行提问（支持同步等待与异步任务发射）。"""
+    """在外部 Chrome 的 Gemini 网页中执行提问（支持无弹窗附件上传、异步发射与会话复用）。"""
     t0 = time.time()
+    file_paths = _validate_files(files)
     page = get_gemini_page(browser, new_tab=new_tab, tab_url_hint=tab_url_hint)
 
-    if new_tab:
+    if new_tab and not tab_url_hint and not re.search(r"gemini\.google\.com/app/[^/?#]+", page.url or ""):
         select_entry_mode(page, entry)
 
     active_model = select_model(page, model) if model else ""
@@ -250,6 +355,8 @@ def execute_ask(
         select_thinking_level(page, thinking)
     if tool and entry.lower() != "task":
         select_tool(page, tool)
+
+    attached_files = _gemini_attach_files(page, file_paths) if file_paths else []
 
     before_count = page.locator("model-response").count()
 
@@ -271,11 +378,13 @@ def execute_ask(
             if "/app/" in (page.url or "") or page.locator("model-response").count() > before_count:
                 break
             page.wait_for_timeout(300)
+        _save_last_session("gemini", page.url)
         return {
             "status": "dispatched",
             "entry": entry,
             "model": active_model,
             "url": page.url,
+            "attached_files": attached_files,
             "elapsed_sec": round(time.time() - t0, 2),
         }
 
@@ -297,7 +406,10 @@ def execute_ask(
         wait_response_complete(page, latest_resp, deadline)
 
     res = extract_latest_result(page)
+    _save_last_session("gemini", res.get("url") or page.url)
     res["status"] = "ok"
+    if attached_files:
+        res["attached_files"] = attached_files
     res["elapsed_sec"] = round(time.time() - t0, 2)
     return res
 
@@ -421,20 +533,37 @@ def _get_aistudio_page(
     ready_selector: str,
     new_tab: bool = True,
     tab_url_hint: str = "",
+    required_path: str = "/prompts",
 ):
-    """获取或新建 AI Studio 标签页，并等待关键界面就绪。"""
+    """获取或新建 AI Studio 标签页；复用模式支持优先选已有同类型对话并按历史 URL 重连。"""
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     if not new_tab or tab_url_hint:
-        for page in context.pages:
-            url = page.url or ""
-            if "aistudio.google.com" in url and (not tab_url_hint or tab_url_hint in url):
-                page.bring_to_front()
-                page.locator(ready_selector).first.wait_for(state="visible", timeout=30000)
-                return page
-        if tab_url_hint and not tab_url_hint.startswith("https://"):
-            raise RuntimeError(f"未找到匹配的 AI Studio 标签页: {tab_url_hint}")
+        matched_pages = [
+            p
+            for p in context.pages
+            if "aistudio.google.com" in (p.url or "")
+            and (tab_url_hint in (p.url or "") if tab_url_hint else (not required_path or required_path in (p.url or "")))
+        ]
+        if matched_pages:
+            if not tab_url_hint:
+                matched_pages.sort(
+                    key=lambda p: 0
+                    if (re.search(r"aistudio\.google\.com/prompts/[^/?#]+", p.url or "") and "/new_chat" not in (p.url or ""))
+                    else 1
+                )
+            page = matched_pages[0]
+            page.bring_to_front()
+            page.locator(ready_selector).first.wait_for(state="visible", timeout=30000)
+            return page
+
         if tab_url_hint.startswith("https://"):
             target_url = tab_url_hint
+        else:
+            last_url = _load_last_session("aistudio") if required_path == "/prompts" else ""
+            if last_url and (not tab_url_hint or tab_url_hint in last_url):
+                target_url = last_url
+            elif tab_url_hint:
+                raise RuntimeError(f"未找到匹配的 AI Studio 标签页: {tab_url_hint}")
 
     page = context.new_page()
     page.bring_to_front()
@@ -442,6 +571,30 @@ def _get_aistudio_page(
     page.locator(ready_selector).first.wait_for(state="visible", timeout=30000)
     page.wait_for_timeout(500)
     return page
+
+
+def _aistudio_attach_files(page, file_paths: list[str], timeout_sec: int = 60) -> list[str]:
+    """在 AI Studio Playground 通过 <input type='file'> 无弹窗上传本地文件并等待解析完成。"""
+    if not file_paths:
+        return []
+    file_input = page.locator('ms-add-media-button input[type="file"], input.file-input').first
+    file_input.wait_for(state="attached", timeout=15000)
+    file_input.set_input_files(file_paths)
+    deadline = time.time() + timeout_sec
+    expected_names = [Path(p).name for p in file_paths]
+    while time.time() < deadline:
+        box_text = (
+            page.evaluate(
+                "() => (document.querySelector('ms-prompt-box, .prompt-box-container, footer, form')?.innerText || '')"
+            )
+            or ""
+        )
+        all_seen = all(name in box_text for name in expected_names)
+        if all_seen and "Loading..." not in box_text and "Uploading" not in box_text:
+            break
+        page.wait_for_timeout(500)
+    page.wait_for_timeout(400)
+    return expected_names
 
 
 def _resolve_aistudio_model_name(model: str) -> str:
@@ -794,6 +947,8 @@ def execute_playground(
     prompt: str,
     model: str = "hydrogen",
     system_instruction: str = "",
+    system_file: str = "",
+    files: list[str] | None = None,
     new_tab: bool = True,
     tab_url_hint: str = "",
     async_send: bool = False,
@@ -802,6 +957,8 @@ def execute_playground(
 ) -> dict:
     """在 AI Studio Playground 全工作台执行对话/生图/生视频/Lyria音乐/TTS配音/Deep Research。"""
     t0 = time.time()
+    file_paths = _validate_files(files)
+    sys_text = _read_system_text(system_instruction, system_file)
     model_id = _resolve_aistudio_model_id(model) if model else ""
     target_url = (
         f"https://aistudio.google.com/prompts/new_chat?model={model_id}"
@@ -815,12 +972,18 @@ def execute_playground(
         'textarea[aria-label="Speech block text"], '
         'mat-card.create-dialog-card'
     )
+    required_path = (
+        "/new_music"
+        if model_id.startswith("lyria")
+        else ("/generate-speech" if "tts" in model_id else "/prompts")
+    )
     page = _get_aistudio_page(
         browser,
         target_url=target_url,
         ready_selector=ready_selector,
         new_tab=new_tab,
         tab_url_hint=tab_url_hint,
+        required_path=required_path,
     )
 
     cur_url = page.url or ""
@@ -835,8 +998,10 @@ def execute_playground(
         card = page.locator(".model-selector-card").first
         active_model = re.sub(r"\s+", " ", (card.inner_text() or "")).strip() if card.count() > 0 else (model_id or model)
 
-    if system_instruction:
-        _aistudio_set_system_instruction(page, system_instruction)
+    if sys_text:
+        _aistudio_set_system_instruction(page, sys_text)
+
+    attached_files = _aistudio_attach_files(page, file_paths) if file_paths else []
 
     before_turns = page.locator("ms-chat-turn").count()
     prompt_box = page.locator('textarea[aria-label="Enter a prompt"]').first
@@ -852,11 +1017,13 @@ def execute_playground(
             if "/new_chat" not in (page.url or "") or page.locator("ms-chat-turn").count() > before_turns:
                 break
             page.wait_for_timeout(300)
+        _save_last_session("aistudio", page.url)
         return {
             "status": "dispatched",
             "entry": "aistudio-playground",
             "model": active_model,
             "url": page.url,
+            "attached_files": attached_files,
             "elapsed_sec": round(time.time() - t0, 2),
         }
 
@@ -883,6 +1050,7 @@ def execute_playground(
         raise TimeoutError("等待 AI Studio Playground 输出超时。")
 
     extracted = _aistudio_extract_playground_result(page, download_dir=download_dir)
+    _save_last_session("aistudio", page.url)
     return {
         "status": "ok",
         "entry": "aistudio-playground",
@@ -893,6 +1061,53 @@ def execute_playground(
         "img_count": len(extracted.get("imgBlobs", [])),
         "video_count": len(extracted.get("videoBlobs", [])),
         "saved_files": extracted.get("saved_files", []),
+        "attached_files": attached_files,
+        "elapsed_sec": round(time.time() - t0, 2),
+    }
+
+
+def execute_attach(
+    browser,
+    files: list[str],
+    site: str = "auto",
+    tab_url_hint: str = "",
+) -> dict:
+    """只把本地文件无弹窗挂载到已打开的 AI Studio 或 Gemini 标签页，不立即发送。"""
+    t0 = time.time()
+    file_paths = _validate_files(files)
+    if not file_paths:
+        raise ValueError("请至少传入一个 --file 文件路径")
+    inferred_site = site
+    if inferred_site == "auto":
+        if "gemini.google.com" in tab_url_hint:
+            inferred_site = "gemini"
+        elif "aistudio.google.com" in tab_url_hint:
+            inferred_site = "aistudio"
+        else:
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            urls = [p.url or "" for p in context.pages]
+            inferred_site = "gemini" if any("gemini.google.com" in u for u in urls) and not any("aistudio.google.com" in u for u in urls) else "aistudio"
+
+    if inferred_site == "gemini":
+        page = get_gemini_page(browser, new_tab=False, tab_url_hint=tab_url_hint)
+        attached = _gemini_attach_files(page, file_paths)
+        _save_last_session("gemini", page.url)
+    else:
+        page = _get_aistudio_page(
+            browser,
+            target_url="https://aistudio.google.com/prompts/new_chat",
+            ready_selector='textarea[aria-label="Enter a prompt"]',
+            new_tab=False,
+            tab_url_hint=tab_url_hint,
+        )
+        attached = _aistudio_attach_files(page, file_paths)
+        _save_last_session("aistudio", page.url)
+
+    return {
+        "status": "attached",
+        "site": inferred_site,
+        "url": page.url,
+        "attached_files": attached,
         "elapsed_sec": round(time.time() - t0, 2),
     }
 
@@ -1057,6 +1272,7 @@ def execute_build(
         ready_selector=ready_sel,
         new_tab=not bool(app_url),
         tab_url_hint=app_url,
+        required_path="/apps",
     )
 
     if prompt:
@@ -1535,10 +1751,11 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
                         model=body.get("model", "hydrogen"),
                         tool=body.get("tool"),
                         thinking=body.get("thinking"),
-                        new_tab=body.get("new_tab", True),
+                        new_tab=body.get("new_tab", False),
                         tab_url_hint=body.get("tab_url_hint", ""),
                         async_send=body.get("async_send", False),
                         timeout_sec=body.get("timeout_sec", 180),
+                        files=body.get("files"),
                     )
                 elif path == "/fetch":
                     box["result"] = execute_fetch(browser, tab_url_hint=body.get("tab_url_hint", ""))
@@ -1550,11 +1767,20 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
                         prompt=body["prompt"],
                         model=body.get("model", "hydrogen"),
                         system_instruction=body.get("system_instruction", ""),
-                        new_tab=body.get("new_tab", True),
+                        system_file=body.get("system_file", ""),
+                        files=body.get("files"),
+                        new_tab=body.get("new_tab", False),
                         tab_url_hint=body.get("tab_url_hint", ""),
                         async_send=body.get("async_send", False),
                         timeout_sec=body.get("timeout_sec", 180),
                         download_dir=body.get("download_dir", ""),
+                    )
+                elif path == "/attach":
+                    box["result"] = execute_attach(
+                        browser,
+                        files=body["files"],
+                        site=body.get("site", "auto"),
+                        tab_url_hint=body.get("tab_url_hint", ""),
                     )
                 elif path == "/build":
                     box["result"] = execute_build(
@@ -1648,8 +1874,10 @@ def main() -> None:
     p_ask.add_argument("--model", "-m", default="hydrogen", help="模型: flash-lite | hydrogen | pro | argon | carbon")
     p_ask.add_argument("--tool", "-t", default=None, help="对话模式工具: Deep Research | Canvas | 制作图片 | 制作视频 | 制作音乐")
     p_ask.add_argument("--thinking", default=None, help="思考等级: 低 | 中 | 高")
-    p_ask.add_argument("--reuse-tab", action="store_true", help="复用已有标签页继续对话")
-    p_ask.add_argument("--tab-hint", default="", help="指定复用的会话 URL 片段")
+    p_ask.add_argument("--file", dest="files", action="append", default=[], help="无弹窗上传本地附件（可多次传入）")
+    p_ask.add_argument("--reuse-tab", action="store_true", help="显式复用已有标签页继续对话（默认已优先复用）")
+    p_ask.add_argument("--new-chat", action="store_true", help="强制新开一个空白对话窗口")
+    p_ask.add_argument("--tab-hint", default="", help="指定复用的会话 URL 或片段")
     p_ask.add_argument("--async-send", action="store_true", help="异步发射：发包拿到会话 URL 后立即返回不等待完成")
     p_ask.add_argument("--timeout", type=int, default=180, help="同步等待超时秒数")
     p_ask.add_argument("--raw", action="store_true", help="仅输出纯文本回答")
@@ -1673,13 +1901,22 @@ def main() -> None:
         help="模型别名或ID: hydrogen | argon | flash | decision | nano2.1 | nano-pro | omni1.2 | lyria | tts | research | gemma-31b 等",
     )
     p_pg.add_argument("--system", default="", help="系统指令 (System Instructions)")
+    p_pg.add_argument("--system-file", default="", help="从本地文件读取文本并写入 System Instructions（如世界观设定 .md/.txt）")
+    p_pg.add_argument("--file", dest="files", action="append", default=[], help="无弹窗上传本地文件（可多次传入，支持 txt/md/pdf/docx/图片/音视频）")
     p_pg.add_argument("--download-dir", default="", help="将生成的图片(PNG)/视频(MP4)/音乐(MP3)/配音(WAV)落盘到指定目录")
-    p_pg.add_argument("--reuse-tab", action="store_true", help="复用已有 AI Studio 标签页继续对话")
+    p_pg.add_argument("--reuse-tab", action="store_true", help="显式复用已有 AI Studio 标签页继续对话（默认已优先复用）")
+    p_pg.add_argument("--new-chat", action="store_true", help="强制新开一个 AI Studio 对话窗口")
     p_pg.add_argument("--tab-hint", default="", help="目标会话 URL 或片段")
     p_pg.add_argument("--async-send", action="store_true", help="发送后立即返回会话 URL，不等待输出结束")
     p_pg.add_argument("--timeout", type=int, default=180, help="同步等待超时秒数")
     p_pg.add_argument("--raw", action="store_true", help="仅输出纯文本回答")
     p_pg.add_argument("--port", type=int, default=None)
+
+    p_attach = sub.add_parser("attach", help="仅将本地文件无弹窗挂载到已打开的 AI Studio / Gemini 对话标签页")
+    p_attach.add_argument("--file", dest="files", action="append", required=True, help="待上传的本地文件路径（可多次传入）")
+    p_attach.add_argument("--site", choices=["auto", "aistudio", "gemini"], default="auto", help="目标站点（默认自动识别）")
+    p_attach.add_argument("--tab-hint", default="", help="目标会话 URL 或片段")
+    p_attach.add_argument("--port", type=int, default=None)
 
     p_build = sub.add_parser("build", help="在 AI Studio Build 创建/迭代全栈项目并下载 ZIP")
     p_build.add_argument("--prompt", "-p", default="", help="应用需求或修改指令（可省略以仅导出已有项目）")
@@ -1717,16 +1954,18 @@ def main() -> None:
         return
 
     if args.cmd == "ask":
+        new_tab = bool(args.new_chat and not args.reuse_tab and not args.tab_hint)
         payload = {
             "prompt": args.prompt,
             "entry": args.entry,
             "model": args.model,
             "tool": args.tool,
             "thinking": args.thinking,
-            "new_tab": not args.reuse_tab,
+            "new_tab": new_tab,
             "tab_url_hint": args.tab_hint,
             "async_send": args.async_send,
             "timeout_sec": args.timeout,
+            "files": args.files,
         }
         res = _exec_cdp(
             args.port,
@@ -1739,10 +1978,11 @@ def main() -> None:
                 model=args.model,
                 tool=args.tool,
                 thinking=args.thinking,
-                new_tab=not args.reuse_tab,
+                new_tab=new_tab,
                 tab_url_hint=args.tab_hint,
                 async_send=args.async_send,
                 timeout_sec=args.timeout,
+                files=args.files,
             ),
         )
         _print_result(res, args.raw, ("answer", "url"))
@@ -1780,11 +2020,14 @@ def main() -> None:
         return
 
     if args.cmd == "playground":
+        new_tab = bool(args.new_chat and not args.reuse_tab and not args.tab_hint)
         payload = {
             "prompt": args.prompt,
             "model": args.model,
             "system_instruction": args.system,
-            "new_tab": not args.reuse_tab,
+            "system_file": args.system_file,
+            "files": args.files,
+            "new_tab": new_tab,
             "tab_url_hint": args.tab_hint,
             "async_send": args.async_send,
             "timeout_sec": args.timeout,
@@ -1799,7 +2042,9 @@ def main() -> None:
                 prompt=args.prompt,
                 model=args.model,
                 system_instruction=args.system,
-                new_tab=not args.reuse_tab,
+                system_file=args.system_file,
+                files=args.files,
+                new_tab=new_tab,
                 tab_url_hint=args.tab_hint,
                 async_send=args.async_send,
                 timeout_sec=args.timeout,
@@ -1807,6 +2052,26 @@ def main() -> None:
             ),
         )
         _print_result(res, args.raw, ("text", "url"))
+        return
+
+    if args.cmd == "attach":
+        payload = {
+            "files": args.files,
+            "site": args.site,
+            "tab_url_hint": args.tab_hint,
+        }
+        res = _exec_cdp(
+            args.port,
+            "/attach",
+            payload,
+            lambda b: execute_attach(
+                b,
+                files=args.files,
+                site=args.site,
+                tab_url_hint=args.tab_hint,
+            ),
+        )
+        print(json.dumps(res, ensure_ascii=False, indent=2))
         return
 
     if args.cmd == "build":

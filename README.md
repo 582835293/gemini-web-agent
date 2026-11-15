@@ -42,9 +42,9 @@ cd gemini-web-agent && python scripts/setup_skill.py --auto
      - `Omni 1.2 Flash` / `Veo 3.1 - Lite` 生视频：使用独立每月 Flow 点数池，不消耗本地 coding 配额
    - **`gemini.google.com/app`（Pro 网页主配额 + 异步 Task）**
      - 支持对话模式与异步 `任务 (Task)` 模式、完整 `4 Hydrogen` / `4 Argon` 模型、Canvas、制作音乐与 Deep Research
-2. **双通道执行架构**
-   - **通道 A（首选）：AgentLimb MCP** — 复用你已登录的外部 Chrome（跨重启永久免弹窗授权，直接 DOM/JS 注入与 Blob/Base64 产物落盘）。
-   - **通道 B（备用）：Playwright CDP CLI（[`scripts/gemini_web.py`](scripts/gemini_web.py)）** — 通过 Chrome DevTools 调试端口执行多端用量巡检、对话、异步任务、生图、生视频、作曲、TTS 与 Build 工程导出。
+2. **双通道执行架构（支持长任务复用与无弹窗上传本地设定）**
+   - **通道 A（首选）：AgentLimb MCP** — 复用你已登录的外部 Chrome（跨重启永久免弹窗授权，直接 DOM/JS 注入与 Blob/Base64 产物落盘）；支持在同一个会话标签页连续续聊写长文/改代码，并支持在 AI Studio 通过 `DataTransfer` 无弹窗自动上传本地 `.md` / `.txt` / `.pdf` / 图片等资料。
+   - **通道 B（备用）：Playwright CDP CLI（[`scripts/gemini_web.py`](scripts/gemini_web.py)）** — 通过 Chrome DevTools 调试端口执行多端用量巡检、对话、异步任务、生图、生视频、作曲、TTS 与 Build 工程导出；支持 **`--file` / `--system-file` / `attach`** 无弹窗直传本地文件，且默认复用当前同类会话窗口（开新对话传 `--new-chat`）。
 3. **先查后用，额度感知调度（内置 Antigravity 本地双轨与路由检测）**
    - 激活后支持巡检 `gemini.google.com/usage` 与 `flow.google.com` 独立点数余额，并**内置 [`scripts/inspect_antigravity.py`](scripts/inspect_antigravity.py)**（纯标准库零依赖，可探测本地 Antigravity Connect-RPC 双轨配额、SQLite `gen_metadata` 后端实际路由与四维 Token 消耗；Claude Code / Codex 等客户端自动跳过本地对比，直接分流省额度）。
 4. **附带实战示例切图脚本（[`scripts/slice_sprites.py`](scripts/slice_sprites.py)，可选参考）**
@@ -119,17 +119,19 @@ python .\scripts\inspect_antigravity.py --markdown   # 仅 Antigravity 环境按
 & $py $cli flow --media image --model "Nano Banana 2.1" --aspect 16:9 --count 1 --resolution 2K --prompt "a glowing cyberpunk energy core" --download-dir "./out"
 & $py $cli flow --media video --model "Omni 1.2 Flash" --aspect 16:9 --resolution 720p --count 1 --prompt "neon light particles flowing" --download-dir "./out"
 
-# 3. AI Studio Playground 全模态直达（免 API Key 免费额度）
-& $py $cli playground --model hydrogen --prompt "总结以下架构设计方案..." --raw
-& $py $cli playground --model research --prompt "Deep research topic" --raw
+# 3. AI Studio Playground 全模态直达（默认同窗口复用；支持 --system-file / --file 无弹窗上传；开新对话传 --new-chat）
+& $py $cli playground --model hydrogen --system-file "./世界观设定.md" --file "./人物小传.pdf" --prompt "列出第1章大纲" --new-chat --raw
+& $py $cli playground --model hydrogen --prompt "基于第1章大纲写正文" --raw
+& $py $cli playground --model research --prompt "Deep research topic" --new-chat --raw
 & $py $cli playground --model nano2.1 --prompt "cozy watercolor lantern" --download-dir "./out"
 & $py $cli playground --model omni1.2 --prompt "raindrops glowing on a bakery window" --download-dir "./out"
 & $py $cli playground --model lyria --prompt "inspiring synthwave background music, 118bpm" --download-dir "./out"
 & $py $cli playground --model tts --prompt "欢迎使用 Gemini Web-Agent 调度三端免费额度！" --download-dir "./out"
 
-# 4. AI Studio Build 整站生成并解压 + Gemini 网页异步任务
+# 4. 仅挂载本地文件到已打开标签页 + AI Studio Build 导出 + Gemini 网页异步任务
+& $py $cli attach --site aistudio --file "./补充资料.txt"
 & $py $cli build --mode default --model hydrogen --framework React --prompt "一个极简番茄钟网页应用" --download-dir "./out" --extract
-& $py $cli ask --entry task --model hydrogen --prompt "异步调研任务..." --async-send
+& $py $cli ask --entry task --model hydrogen --file "./需求说明.pdf" --prompt "异步调研任务..." --async-send
 & $py $cli fetch --raw
 ```
 

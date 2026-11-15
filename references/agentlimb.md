@@ -8,7 +8,18 @@
 1. **永久免弹窗与跨重启信任**：首次配对成功后信任状态持久化保存，后续启动 Antigravity 与 Chrome 自动连通，无需重配或点调试允许框。
 2. **省 Token 调用原则**：控制网页端 Gemini 时，优先使用 `javascript_eval` / `browser_batch` 直接定位实测锚点，避免反复截图与 `read_page` 消耗大量 Token。
 3. **多账号并发**：Chrome 多 Profile 同时启用 AgentLimb 后，所有工具传 `browser: "<ProfileID或别名>"` 即可路由到不同账号分担额度。
-4. **每次任务结束**：调用 `agentlimb:say` 释放面板状态。
+4. **长任务窗口复用**：连续创作/改代码时先用 `tabs_context` 查找并复用已打开的 `/prompts/...` 或 `/app/...` 标签页，避免每轮都新开 `new_chat` 打断上下文。
+5. **AI Studio 无弹窗传文件模板（实测可用）**：本地读出文件 Base64 后，在 AI Studio Tab 执行：
+   ```js
+   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+   const inp = document.querySelector('ms-add-media-button input[type="file"], input.file-input');
+   const dt = new DataTransfer();
+   dt.items.add(new File([bytes], '设定.md', { type: 'text/markdown' }));
+   inp.files = dt.files;
+   inp.dispatchEvent(new Event('change', { bubbles: true }));
+   ```
+   待提示区显示文件名且无 `Loading...` 即可连同后续指令一起 `Run`（注意 `gemini.google.com` 拦截合成 `DataTransfer`，纯文本直接填输入框，大附件切 AI Studio 或用 `gemini_web.py --file`）。
+6. **每次任务结束**：调用 `agentlimb:say` 释放面板状态。
 
 ## 版本建议与已知兼容性排查（`>= v0.8.2`）
 - **推荐版本**：请使用 **AgentLimb `v0.8.2` 及以上版本**（上游修复发布：https://github.com/hooosberg/AgentLimb/releases/tag/v0.8.2 ）。
