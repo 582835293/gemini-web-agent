@@ -98,7 +98,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-> 若使用首选 **通道 A（AgentLimb MCP）**，请确保已在 Chrome 中启用 AgentLimb 扩展并在 `~/.gemini/config/mcp_config.json` 中完成 `agentlimb` MCP 服务配置（详情参见 [`references/agentlimb.md`](references/agentlimb.md)）。
+> 若使用首选 **通道 A（AgentLimb MCP）**，推荐安装 **`AgentLimb >= v0.8.2`**（修复了本地 `8765` 端口冲突时的内存泄漏问题），请确保已在 Chrome 中启用 AgentLimb 扩展并在对应客户端完成 `agentlimb` MCP 服务配置（排查提示与细节参见 [`references/agentlimb.md`](references/agentlimb.md)）。
 
 ---
 
