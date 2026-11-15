@@ -20,10 +20,20 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
 import venv
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 SKILL_NAME = "gemini-web-agent"
+REPO_SLUG = "582835293/gemini-web-agent"
+REPO_URL = f"https://github.com/{REPO_SLUG}.git"
+DEFAULT_BRANCH = "main"
+VERSION_FILE_NAME = ".skill_version.json"
 COPY_ITEMS = ("SKILL.md", "README.md", "requirements.txt", "references", "scripts")
 
 
@@ -204,8 +214,21 @@ def detect_agentlimb_mcp() -> dict:
     }
 
 
+def _probe_cdp_http(port: str, timeout_sec: float = 1.5) -> dict | None:
+    """探测 Chrome CDP HTTP 端口 /json/version（绕过系统代理）。"""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/json/version", method="GET")
+    try:
+        with opener.open(req, timeout=timeout_sec) as resp:
+            if resp.status == 200:
+                return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return None
+    return None
+
+
 def detect_chrome_cdp() -> dict:
-    """检测本机 Chrome 可执行路径与 DevToolsActivePort 状态。"""
+    """检测本机 Chrome 可执行路径、DevToolsActivePort 状态与实际 HTTP/WS 就绪模式。"""
     sys_name = platform.system().lower()
     active_ports = []
     chrome_bins = []
@@ -230,32 +253,241 @@ def detect_chrome_cdp() -> dict:
 
     cdp_ws_url = None
     active_port_file = None
+    cdp_mode = "inactive"
+    cdp_http_ready = False
     for port_file in active_ports:
         if port_file.exists():
             lines = [l.strip() for l in port_file.read_text(encoding="utf-8", errors="ignore").splitlines() if l.strip()]
             if len(lines) >= 2:
                 active_port_file = str(port_file)
-                cdp_ws_url = f"ws://127.0.0.1:{lines[0]}{lines[1]}"
+                port = lines[0]
+                cdp_ws_url = f"ws://127.0.0.1:{port}{lines[1]}"
+                ver = _probe_cdp_http(port)
+                if ver:
+                    cdp_http_ready = True
+                    cdp_mode = "http_ready"
+                else:
+                    cdp_mode = "chrome_ui_approval_required"
                 break
 
     found_chrome = next((str(p) for p in chrome_bins if p.exists()), None)
     return {
         "cdp_active": cdp_ws_url is not None,
+        "cdp_http_ready": cdp_http_ready,
+        "cdp_mode": cdp_mode,
         "active_port_file": active_port_file,
         "cdp_ws_url": cdp_ws_url,
         "chrome_executable": found_chrome,
     }
 
 
+def _get_git_commit(repo_dir: Path) -> str:
+    if not (repo_dir / ".git").exists():
+        return ""
+    proc = subprocess.run(
+        ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _read_version_meta(skill_dir: Path) -> dict:
+    meta_file = skill_dir / VERSION_FILE_NAME
+    if not meta_file.exists():
+        return {}
+    try:
+        return json.loads(meta_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_version_meta(skill_dir: Path, source_root: Path, commit: str = "", last_checked_at: str = "") -> dict:
+    meta = _read_version_meta(skill_dir)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    resolved_commit = commit or _get_git_commit(source_root) or meta.get("installed_commit", "")
+    meta.update({
+        "repo": REPO_URL,
+        "branch": DEFAULT_BRANCH,
+        "source_dir": str(source_root.resolve()),
+        "installed_commit": resolved_commit,
+        "installed_at": now_iso,
+    })
+    if last_checked_at:
+        meta["last_checked_at"] = last_checked_at
+    (skill_dir / VERSION_FILE_NAME).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
+
+
+def _fetch_remote_head(timeout_sec: float = 4.0) -> tuple[str, str, str]:
+    """返回 (remote_commit_short, commit_message, error_msg)。优先 GitHub API，兜底 git ls-remote。"""
+    api_url = f"https://api.github.com/repos/{REPO_SLUG}/commits/{DEFAULT_BRANCH}"
+    req = urllib.request.Request(
+        api_url,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "gemini-web-agent-updater"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            sha = str(data.get("sha", ""))[:7]
+            msg = str(data.get("commit", {}).get("message", "")).splitlines()[0]
+            if sha:
+                return sha, msg, ""
+    except Exception as api_err:
+        err_msg = str(api_err)
+    else:
+        err_msg = "GitHub API 未返回 sha"
+
+    try:
+        proc = subprocess.run(
+            ["git", "ls-remote", REPO_URL, f"refs/heads/{DEFAULT_BRANCH}"],
+            capture_output=True,
+            text=True,
+            timeout=int(max(timeout_sec, 5)),
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            sha = proc.stdout.strip().split()[0][:7]
+            return sha, "", ""
+        if proc.stderr.strip():
+            err_msg = proc.stderr.strip()
+    except Exception as git_err:
+        err_msg = f"{err_msg}; {git_err}"
+    return "", "", err_msg
+
+
+def check_for_updates(skill_dir: Path, source_root: Path, cache_hours: float = 0.0) -> dict:
+    """检测 GitHub 远端 main 分支是否有更新。cache_hours>0 时命中缓存则跳过联网。"""
+    meta = _read_version_meta(skill_dir)
+    if not meta:
+        meta = _read_version_meta(source_root)
+    local_commit = _get_git_commit(source_root) or meta.get("installed_commit", "")
+    last_checked = meta.get("last_checked_at", "")
+
+    if cache_hours > 0 and last_checked:
+        try:
+            last_dt = datetime.fromisoformat(last_checked.replace("Z", "+00:00"))
+            age_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600.0
+            if age_hours < cache_hours:
+                return {
+                    "checked_network": False,
+                    "cache_hit": True,
+                    "cache_age_hours": round(age_hours, 2),
+                    "local_commit": local_commit or None,
+                    "remote_commit": meta.get("remote_commit") or None,
+                    "has_update": bool(
+                        local_commit and meta.get("remote_commit") and not local_commit.startswith(meta["remote_commit"][:7])
+                    ),
+                    "update_command": f'python "{Path(__file__).resolve()}" --update',
+                }
+        except Exception:
+            pass
+
+    remote_sha, remote_msg, err = _fetch_remote_head()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if remote_sha:
+        meta["remote_commit"] = remote_sha
+        meta["last_checked_at"] = now_iso
+        target_meta_dir = skill_dir if skill_dir.exists() else source_root
+        try:
+            (target_meta_dir / VERSION_FILE_NAME).write_text(
+                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    has_update = bool(remote_sha and (not local_commit or not local_commit.startswith(remote_sha[:7])))
+    return {
+        "checked_network": True,
+        "cache_hit": False,
+        "local_commit": local_commit or None,
+        "remote_commit": remote_sha or None,
+        "remote_message": remote_msg or None,
+        "has_update": has_update,
+        "error": err or None,
+        "update_command": f'python "{Path(__file__).resolve()}" --update',
+    }
+
+
+def apply_update(source_root: Path, target_dir: Path, skip_pip: bool = False) -> dict:
+    """自动更新 Skill：优先 git pull，无 .git 时从 GitHub archive zip 拉取，并重同步至全局目录。"""
+    meta = _read_version_meta(target_dir) or _read_version_meta(source_root)
+    candidate_src = Path(meta["source_dir"]) if meta.get("source_dir") else source_root
+    if not candidate_src.exists():
+        candidate_src = source_root
+
+    old_commit = _get_git_commit(candidate_src) or meta.get("installed_commit", "")
+    method = ""
+    if (candidate_src / ".git").exists():
+        method = "git_pull"
+        proc = subprocess.run(
+            ["git", "-C", str(candidate_src), "pull", "--ff-only", "origin", DEFAULT_BRANCH],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"git pull 失败（可能存在未提交本地修改）: {proc.stderr.strip() or proc.stdout.strip()}")
+        new_commit = _get_git_commit(candidate_src)
+        synced = sync_skill_files(candidate_src, target_dir)
+    else:
+        method = "github_zip"
+        zip_url = f"https://github.com/{REPO_SLUG}/archive/refs/heads/{DEFAULT_BRANCH}.zip"
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "repo.zip"
+            req = urllib.request.Request(zip_url, headers={"User-Agent": "gemini-web-agent-updater"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                zip_path.write_bytes(resp.read())
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(tmp)
+            extracted_root = next(Path(tmp).glob(f"{SKILL_NAME}-*"))
+            synced = sync_skill_files(extracted_root, target_dir)
+            candidate_src = target_dir
+        remote_sha, _, _ = _fetch_remote_head()
+        new_commit = remote_sha
+
+    venv_info = ensure_venv_and_deps(target_dir, skip_pip=skip_pip)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    _write_version_meta(target_dir, candidate_src, commit=new_commit, last_checked_at=now_iso)
+    return {
+        "updated": True,
+        "method": method,
+        "previous_commit": old_commit or None,
+        "current_commit": new_commit or None,
+        "files_synced_to_global": synced,
+        "installed_skill_dir": str(target_dir),
+        "venv": venv_info,
+    }
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="gemini-web-agent 自动安装与环境诊断工具")
+    parser = argparse.ArgumentParser(description="gemini-web-agent 自动安装、版本检测与更新工具")
     parser.add_argument("--auto", action="store_true", help="自动同步到全局 Skills 目录并初始化 .venv 依赖")
     parser.add_argument("--target", default="", help="手动指定 Skill 安装目标路径")
     parser.add_argument("--skip-pip", action="store_true", help="仅检查不自动执行 pip 安装")
+    parser.add_argument("--check-update", action="store_true", help="立即联网检查 GitHub 是否有新版本")
+    parser.add_argument("--check-if-stale", action="store_true", help="仅当距离上次检查超过 --cache-hours 小时才联网查更新")
+    parser.add_argument("--cache-hours", type=float, default=24.0, help="自动更新检查缓存小时数（默认 24 小时）")
+    parser.add_argument("--update", action="store_true", help="自动从 GitHub 拉取最新版并重新同步全局 Skill 目录")
     args = parser.parse_args()
 
     source_root = Path(__file__).resolve().parent.parent
     target_dir = detect_target_skill_dir(source_root, args.target)
+
+    if args.update:
+        try:
+            res = apply_update(source_root, target_dir, skip_pip=args.skip_pip)
+            print(json.dumps({"ok": True, **res}, ensure_ascii=False, indent=2))
+        except Exception as e:
+            print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False, indent=2))
+            sys.exit(1)
+        return
+
+    if args.check_update or args.check_if_stale:
+        cache_h = args.cache_hours if args.check_if_stale and not args.check_update else 0.0
+        res = check_for_updates(target_dir if target_dir.exists() else source_root, source_root, cache_hours=cache_h)
+        print(json.dumps({"ok": True, "skill_name": SKILL_NAME, **res}, ensure_ascii=False, indent=2))
+        return
 
     synced = False
     if args.auto or args.target:
@@ -263,9 +495,13 @@ def main() -> None:
     else:
         target_dir = source_root.resolve()
 
+    if synced or not (target_dir / VERSION_FILE_NAME).exists():
+        _write_version_meta(target_dir, source_root)
+
     venv_info = ensure_venv_and_deps(target_dir, skip_pip=args.skip_pip)
     agentlimb_info = detect_agentlimb_mcp()
     cdp_info = detect_chrome_cdp()
+    version_meta = _read_version_meta(target_dir)
 
     next_actions = []
     if not venv_info["dependencies_ready"]:
@@ -283,6 +519,11 @@ def main() -> None:
             " (1) 安装并启用 AgentLimb MCP（永久免弹窗，参见 references/agentlimb.md）；"
             f" 或 (2) 关闭现有 Chrome 后用 `{chrome_cmd}` 重启 Chrome 启用通道 B CDP 脚本。"
         )
+    elif agentlimb_info["configured"] and cdp_info["cdp_mode"] == "chrome_ui_approval_required":
+        next_actions.append(
+            "通道 A (AgentLimb MCP) 已就绪。检测到 Chrome 当前通过浏览器内开关监听调试端口（/json/version 未暴露），"
+            "通道 B 若出现连接超时：请在 Chrome 弹出的「允许远程调试」框点击允许，或改用 --remote-debugging-port=9222 启动 Chrome。"
+        )
     elif agentlimb_info["configured"]:
         next_actions.append("通道 A (AgentLimb MCP) 已就绪，可直接操控已登录外部 Chrome；通道 B (gemini_web.py) 已配齐备用。")
     else:
@@ -293,6 +534,7 @@ def main() -> None:
     report = {
         "ok": venv_info["dependencies_ready"],
         "skill_name": SKILL_NAME,
+        "installed_commit": version_meta.get("installed_commit") or None,
         "source_dir": str(source_root.resolve()),
         "installed_skill_dir": str(target_dir),
         "files_synced_to_global": synced,

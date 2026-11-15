@@ -18,12 +18,16 @@
 （克隆后运行 python scripts/setup_skill.py --auto，并按输出的 JSON 检查浏览器通道状态）
 ```
 
-你也可以手动执行两条命令完成零配置初始化：
+你也可以手动执行两条命令完成零配置初始化，或一键检查/升级 Skill 到最新版：
 ```bash
 git clone https://github.com/582835293/gemini-web-agent.git
 cd gemini-web-agent && python scripts/setup_skill.py --auto
+
+# 自动检查 GitHub 更新与一键自动升级同步：
+python scripts/setup_skill.py --check-update
+python scripts/setup_skill.py --update
 ```
-`setup_skill.py` 会自动完成：① 同步 Skill 至全球目录（如 `~/.gemini/config/skills/gemini-web-agent`）；② 创建独立 `.venv` 并安装 `playwright`、`Pillow`（不下载 300MB 冗余浏览器）；③ 自动探测本机 **AgentLimb MCP** 与 **Chrome 调试端口** 状态并输出 JSON 报告。
+`setup_skill.py` 会自动完成：① 同步 Skill 至全球目录（如 `~/.gemini/config/skills/gemini-web-agent`）并写入版本校验元数据 `.skill_version.json`；② 创建独立 `.venv` 并安装 `playwright`、`Pillow`（不下载 300MB 冗余浏览器）；③ 自动探测本机 **AgentLimb MCP** 与 **Chrome 调试端口** 状态并输出 JSON 报告；④ 支持 `--check-if-stale`（24h 缓存零延迟）与 `--update`（自动 `git pull` 或 GitHub ZIP 兜底同步升级）。
 
 ---
 

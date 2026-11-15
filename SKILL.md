@@ -23,9 +23,20 @@ description: >-
 python scripts/setup_skill.py --auto
 ```
 
+- **自动检测更新与升级（建议每次激活或巡检额度时顺手执行）**：
+  ```bash
+  # 24 小时内命中本地缓存 10ms 返回不联网；超 24 小时自动检查 GitHub main 是否有新提交
+  python scripts/setup_skill.py --check-if-stale
+  # 立即联网检查 / 自动拉取最新代码并重同步全局目录（git pull 或 GitHub zip 兜底）
+  python scripts/setup_skill.py --check-update
+  python scripts/setup_skill.py --update
+  ```
+  - 若 `has_update == true`，先向用户简短告知有新版本（附 `remote_message`），经同意后直接跑 `--update` 即可无痛升级。
+
 - 读取脚本输出的 JSON：
   - 若 `channel_a_agentlimb.configured == true`：直接通过 `agentlimb` MCP 控制外部 Chrome（推荐首选）。
-  - 若 `channel_a_agentlimb.configured == false` 且 `channel_b_cdp.cdp_active == true`：直接使用 `venv.venv_python` 搭配 `cli_script` 走 Chrome CDP 备用通道。
+  - 若 `channel_a_agentlimb.configured == false` 且 `channel_b_cdp.cdp_http_ready == true`（或已完成 Chrome 远程调试确认）：直接使用 `venv.venv_python` 搭配 `cli_script` 走 Chrome CDP 备用通道。
+  - 若 `channel_b_cdp.cdp_mode == "chrome_ui_approval_required"`：说明 Chrome 是通过浏览器内开关监听调试端口（未暴露 `/json/version`），若切通道 B 遇连接挂起，提示用户在 Chrome 弹窗点“允许远程调试”或改用 `--remote-debugging-port=9222` 启动 Chrome。
   - 若两通道均未开启：向用户展示 `next_actions` 提示其安装 `AgentLimb` 或使用脚本检测到的 Chrome 路径带 `--remote-debugging-port=9222` 启动一次即可。
 
 ---
