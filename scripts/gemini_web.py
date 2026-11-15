@@ -703,9 +703,43 @@ def _aistudio_playground_is_running(page) -> bool:
                     const rect = b.getBoundingClientRect();
                     if (rect.width <= 0 || rect.height <= 0) continue;
                     const txt = (b.innerText || '').trim();
-                    if (/^Stop\\b/i.test(txt) || /^Cancel\\b/i.test(txt)) return true;
+                    const aria = (b.getAttribute('aria-label') || '').trim();
+                    if (/\\b(Stop|Cancel)\\b/i.test(txt) || /\\b(Stop|Cancel)\\b/i.test(aria)) return true;
+                }
+                const modelTurns = Array.from(document.querySelectorAll('[data-turn-role="Model"]'));
+                const last = modelTurns[modelTurns.length - 1];
+                if (last) {
+                    const thoughtEls = Array.from(last.querySelectorAll('ms-thought-chunk, mat-expansion-panel'));
+                    const thoughtSet = new Set(thoughtEls);
+                    const finalCmarks = Array.from(last.querySelectorAll('ms-cmark-node')).filter(
+                        n => !Array.from(thoughtSet).some(t => t.contains(n)) && (n.innerText || '').trim().length > 0
+                    );
+                    const hasMedia = last.querySelectorAll('img[src^="blob:"], video[src^="blob:"]').length > 0;
+                    const raw = (last.innerText || '');
+                    if (!finalCmarks.length && !hasMedia && (/正在思考|Thinking/i.test(raw) || last.querySelector('mat-spinner, mat-progress-bar'))) {
+                        return true;
+                    }
                 }
                 return false;
+            }"""
+        )
+    )
+
+
+def _aistudio_has_final_output(page) -> bool:
+    return bool(
+        page.evaluate(
+            """() => {
+                const modelTurns = Array.from(document.querySelectorAll('[data-turn-role="Model"]'));
+                const last = modelTurns[modelTurns.length - 1];
+                if (!last) return false;
+                const thoughtEls = Array.from(last.querySelectorAll('ms-thought-chunk, mat-expansion-panel'));
+                const thoughtSet = new Set(thoughtEls);
+                const finalCmarks = Array.from(last.querySelectorAll('ms-cmark-node')).filter(
+                    n => !Array.from(thoughtSet).some(t => t.contains(n)) && (n.innerText || '').trim().length > 0
+                );
+                const hasMedia = last.querySelectorAll('img[src^="blob:"], video[src^="blob:"]').length > 0;
+                return finalCmarks.length > 0 || hasMedia;
             }"""
         )
     )
@@ -1037,9 +1071,10 @@ def execute_playground(
         announcer_txt = (announcer.first.inner_text() or "") if announcer.count() > 0 else ""
         if running or turn_count > before_turns:
             started = True
-        if started and "response ready" in announcer_txt.lower() and not running:
+        has_output = _aistudio_has_final_output(page)
+        if started and "response ready" in announcer_txt.lower() and not running and has_output:
             break
-        if started and not running and page.locator('[data-turn-role="Model"]').count() > 0:
+        if started and not running and has_output:
             stable_ticks += 1
             if stable_ticks >= 4:
                 break
@@ -1050,6 +1085,8 @@ def execute_playground(
         raise TimeoutError("等待 AI Studio Playground 输出超时。")
 
     extracted = _aistudio_extract_playground_result(page, download_dir=download_dir)
+    if "/new_chat" in (page.url or ""):
+        page.wait_for_timeout(1200)
     _save_last_session("aistudio", page.url)
     return {
         "status": "ok",
