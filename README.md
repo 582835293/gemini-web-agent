@@ -54,8 +54,7 @@ python scripts/setup_skill.py --update
 4. **附带实战示例切图脚本（[`scripts/slice_sprites.py`](scripts/slice_sprites.py)，可选参考）**
    - 作者在录制演示视频、用外部免费额度生成视觉小说《雨夜星屑茶屋》时顺手保留的示例配套脚本（用于把 Flow 一次生成的角色多表情拼图切分成独立透明立绘）；**非额度调度核心必需**，保留在此方便想模仿“全流程做游戏 / 视觉小说”玩法的同学直接参考。
 
-> 📺 **B 站实战讲解视频**：https://www.bilibili.com/video/BV1cZsV6MEVb （含零配置部署演示、多模态素材流水线与真实额度消耗对比）  
-> 💬 **Skill 交流反馈 QQ 群**：`1073187505`（欢迎进群交流多端额度调度玩法、配置排错与 Bug 反馈）
+> 📺 **B 站实战讲解视频**：https://www.bilibili.com/video/BV1cZsV6MEVb （含零配置部署演示、多模态素材流水线与真实额度消耗对比）
 
 ---
 
