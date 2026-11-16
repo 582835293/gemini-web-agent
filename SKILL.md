@@ -51,13 +51,14 @@ python scripts/setup_skill.py --auto
 
 | 任务场景 | 首选渠道（URL & 模型） | 次选 / 补充渠道 | 额度归属与说明 |
 | :--- | :--- | :--- | :--- |
-| **日常推理 / 1M 长输出 / 带搜索与代码执行** | `aistudio.google.com/prompts/new_chat?model=gemini-4-hydrogen`（快、免 `gemini.google.com` 额度） | `gemini.google.com/app`（对话 / `任务` 异步 Agent - `4 Hydrogen`） | AI Studio **`key_off` 网页免费额度**；Gemini 走网页主额度 |
-| **复杂架构规划 / 深度研究** | `aistudio.google.com/prompts/new_chat?model=gemini-4-argon` 或 `deep-research-preview-04-2026` / `deep-research-max-preview-04-2026` | `gemini.google.com/app`（`4 Argon` / `任务` / `Deep Research`） | AI Studio **`key_off` 网页免费额度**（Deep Research 自带 Search + URL context） |
+| **轻量开发 / 独立异步任务 / 干净原型** | `gemini.google.com/app` **`任务 (Task)` 模式（`4 Hydrogen`）**（**优先级高于 Build**，产出干净不自作主张乱加料） | `aistudio.google.com/prompts/new_chat?model=gemini-4-hydrogen` / `Canvas` | 走网页主额度（异步长任务可直接后台发射） |
+| **日常推理 / 1M 最长输出 / 带搜索与代码执行** | `aistudio.google.com/prompts/new_chat?model=gemini-4-hydrogen`（**Thinking 拉到最高 `Extra High`，Output length 拉满 `1,048,576`**） | `gemini.google.com/app`（对话 / `任务` 异步 Agent - `4 Hydrogen`） | AI Studio **`key_off` 网页免费额度**；Gemini 走网页主额度 |
+| **复杂架构规划 / 深度研究** | `aistudio.google.com/prompts/new_chat?model=gemini-4-argon`（**最高可用思考等级 + 最大输出上限**）或 `deep-research-preview-04-2026` / `deep-research-max-preview-04-2026` | `gemini.google.com/app`（`4 Argon` / `任务` / `Deep Research`） | AI Studio **`key_off` 网页免费额度**（Deep Research 自带 Search + URL context） |
 | **图片生成与多轮编辑** | `flow.google.com`（`Nano Banana 2.1`，**消耗 0 点数**，支持 `2K 已高清重塑` 下载） | `aistudio.google.com/prompts/new_chat?model=gemini-nano-banana-2.1`（`key_off` 免费，支持 Search 接地）/ `gemini.google.com` `制作图片` | Flow **0 点数（每日限数十张，默认用 `x1` 省着用）**；超限后由 AI Studio **`key_off` 免费额度** 接力 |
 | **视频生成（含原生音频）** | `aistudio.google.com/prompts/new_chat?model=gemini-omni-1.2-flash`（最长 15s 带原生音频，`key_off` 免费） | `flow.google.com`（`Omni 1.2 Flash` 8~24 点 / `Veo 3.1 - Lite` 10 点）/ `gemini.google.com` `制作视频` | AI Studio **`key_off` 免费且不扣 Flow 点数**；Flow 走独立点数池 |
 | **音乐生成（BGM / 完整歌曲）** | `aistudio.google.com/new_music?model=lyria-3.5`（实测 `key_off` 免费生成 ~3 分钟完整 MP3，含 Text / Composer 模式） | `aistudio.google.com/new_music?model=lyria-3-pro-preview` / `lyria-3-clip-preview` / `gemini.google.com` `制作音乐` / `Flow Music` | AI Studio **`key_off` 网页免费额度** |
 | **语音合成 (TTS) / 录音转写 (STT) / Live 同传** | `aistudio.google.com/generate-speech?model=gemini-3.8-flash-tts`（Voice Design 捏音色、双人剧本、`<gasp>`/`<laugh>` 标签） | 转写：`?model=gemini-3.5-transcribe`；实时同传：`aistudio.google.com/live?model=gemini-3.8-live` / `gemini-3.5-live-translate-preview` | 均走 AI Studio **`key_off` 网页免费额度**（WAV base64 直接可下） |
-| **整站前端 / Android 原型构建** | `aistudio.google.com/apps`（Build：`DEFAULT` / `PLAN` / `MAX`；`React` / `Next.js` / `Angular` / `Android`） | `gemini.google.com` `Canvas`（单页交互原型） | 走 Google AI Pro 订阅网页额度，导出 ZIP / Open in Antigravity / GitHub |
+| **从零构建一整套前端 / 全栈 / Android 工程** | `aistudio.google.com/apps`（Build **仅用于做整套工程**，默认选最高可用挡位：**`MAX` 模式 + `Gemini 4 Argon`**，避开 `Paid`） | `gemini.google.com` **`任务 (Task)` / `Canvas`**（简单或局部需求勿用 Build，以免谷歌自动乱加额外脚手架） | 走 Google AI Pro 订阅网页额度，导出 ZIP / Open in Antigravity / GitHub |
 
 ---
 
@@ -122,11 +123,11 @@ python scripts/setup_skill.py --auto
 ### 1. 检测额度 + 先问后用（向用户确认）
 激活本技能后，**先读取网页端 `/usage`（涉及图片/视频时同步查 Flow 点数）并在 Antigravity 环境中按需对比本地额度，再向用户汇报额度并确认方案（Antigravity 用 `ask_question`、Claude Code 用 `AskUserQuestion`、Codex 等直接对话确认），未获同意前禁止发包**（用户指令已明确入口、模型并授权则直接执行）：
 - **问题 1：本次调度哪个网页端入口与模型？**
+  - `gemini.google.com 任务模式 (Task, 4 Hydrogen) - 高优推荐：适合轻量原型/独立异步编码/调研，产出干净不乱加料`
+  - `AI Studio Playground - 4 Hydrogen / 4 Argon / Deep Research（key_off 免费额度，默认调至 Extra High + 1M 最长输出）`
   - `AI Studio 多模态 - Lyria 3.5 完整音乐 / 3.8 TTS 配音 / Omni 1.2 Flash 视频 / Nano Banana 生图（key_off 免费额度）`
-  - `AI Studio Playground - 4 Hydrogen / 4 Argon / Deep Research（key_off 免费额度，1M长输出/带搜索/代码执行）`
   - `Google Flow (flow.google.com) - Nano Banana 2.1 生图（0 点数）/ Omni 1.2 Flash / Veo 3.1 视频（独立点数）`
-  - `AI Studio Build - 生成完整前端工程并导出（Open in Antigravity / 下载 ZIP）`
-  - `gemini.google.com 对话 / 异步任务 (4 Hydrogen / 4 Argon) 或 Canvas / 制作音乐兜底`
+  - `AI Studio Build - 仅适合从零构建一整套工程并导出 ZIP（默认选最高可用 MAX + Gemini 4 Argon）`
 - **问题 2：确认授权通过外部 Chrome 自动发送、监控并落盘结果？**
   - `同意，立即调用` / `暂不调用`
 
@@ -148,6 +149,9 @@ python scripts/setup_skill.py --auto
      - **无弹窗上传本地设定 / 资料（支持 `.md` / `.txt` / `.pdf` / `.docx` / 图片 / 音视频）**：
        1. 若要保留全局长设定（如小说世界观、项目规范），优先点击 `.system-instructions-card` 写入 **System Instructions**；
        2. 需要以**附件芯片**形式传任意本地文件时，用本地命令行将文件读为 Base64，在目标 Tab 通过 `javascript_eval` 构造 `new File([bytes], filename, { type })` 放入 `DataTransfer`，赋给 `ms-add-media-button input[type="file"], input.file-input` 的 `.files` 并派发 `new Event('change', { bubbles: true })`，等待输入区出现文件名且 `Loading...` 消失（显示 `X tokens`）即可（若通道 B CDP 已连通，也可调 `gemini_web.py attach --file ...`）。
+     - **拉满最高思考等级与最长输出（文本推理 / 代码 / 长输出必调）**：
+       1. 打开右侧 `mat-select[aria-label="Thinking Level"]`，选择最后一个非 disabled 且非 `Paid` 的最高挡位（如 `Extra High`，其次 `High`）；
+       2. 若未展开 `Advanced settings` 则点击展开，找到 `input[name="maxOutputTokens"], input[aria-label="Maximum output tokens"]`，通过原生 setter + `input/change/blur` 事件将其拉满到 `el.max`（默认 `65536`，拉满可达 `1048576` 即完整 1M 单轮长输出）。
      - **输入与发送**：使用原生 setter + `InputEvent` 写入 `textarea[aria-label="Enter a prompt"]`，等待 `250ms` 后点击非 `.rerun-button` 的 `Run` 按钮。
      - **重要（虚拟滚动懒渲染）**：完成信号为 `.cdk-live-announcer-element` 出现 `"Response ready."`；提取内容前**务必先 `tab_activate(tabId)` 并 `turns[turns.length-1].scrollIntoView()`**！
      - 提取产物：文本读 `[data-turn-role="Model"] ms-cmark-node`（取最后一个非空节点）；图片读 `ms-chat-turn img[src^="blob:"]`（过滤 `naturalWidth > 200` 避开水印小图）及 `button[aria-label="Download"]`；视频读 `<ms-video-generation-gallery> video[src^="blob:"]` 及 `button[aria-label="Download video"]`（可直接浏览器上下文 `fetch(blobUrl)` 转 base64 落盘）。
@@ -157,8 +161,8 @@ python scripts/setup_skill.py --auto
    - **语音合成配音工作台（`/generate-speech?model=gemini-3.8-flash-tts`）**：
      - 零状态页点击 `mat-card.create-dialog-card`（`Create new dialog`）；可用 `button.voice-chip` 选音色/多说话人；向 `textarea[aria-label="Speech block text"]` 写入文本，**等待 `250ms`** 后点击 `button.ctrl-enter-submits`（`Run`）。
      - 完成后挂载 `<audio src="data:audio/wav;base64,...">` 与 `button.download-button[aria-label="Download"]`，解码 base64 直接写 `.wav` 文件。
-   - **Build 整站生成与导出（`/apps`）**：
-     - 选模式（`Default` / `Plan` / `Max`）与 `settings` 内模型/框架（`React` / `Next.js` / `Angular` / `Android`），向 `div[aria-label="Describe an app and let Gemini do the rest"]` 注入需求点 `button[aria-label="Send"]`；完成后在 `?showCode=true&showAssistant=true` 点 `button[aria-label="Export options"]` 选择 **`Export to Antigravity`** / **`Download as .zip file`** / **`Push to GitHub`**。
+   - **Build 整套工程生成与导出（`/apps`，仅用于整套工程；简单任务优先走 `gemini.google.com` `任务` 模式）**：
+     - 默认尽量选**最高可用挡位**：模式选 **`MAX`**，在 `Settings` 中将聊天模型选为最高非 `Paid` 项 **`Gemini 4 Argon`**（避开 `Gemini 4 Carbon Paid`），再按需选框架（`React` / `Next.js` / `Angular` / `Android`）。向 `div[aria-label="Describe an app and let Gemini do the rest"]` 注入需求点 `button[aria-label="Send"]`；完成后在 `?showCode=true&showAssistant=true` 点 `button[aria-label="Export options"]` 选择 **`Export to Antigravity`** / **`Download as .zip file`** / **`Push to GitHub`**。
 
 2. **`flow.google.com`（生图 0 点数 / 生视频独立点数）**：
    - 打开 `https://flow.google.com/` 点击 `新建项目`（或复用 `/project/<id>`），关掉右侧助手栏或点灭底栏 `智能体` 开关切回直出模式，点 `button[aria-label="设置触发器"]`：选 `image 图片` / `videocam 视频`、比例、模型（`Nano Banana 2.1` / `Omni 1.2 Flash` / `Veo 3.1 - Lite`）、分辨率（`360p` / `720p`）并将数量改为 **`x1`**。
@@ -199,9 +203,9 @@ $cli = "$skillDir\scripts\gemini_web.py"
 # 4. 仅无弹窗挂载附件到已有标签页（也可配合通道 A 使用）
 & $py $cli attach --site aistudio --file "参考设定.pdf" --tab-hint "https://aistudio.google.com/prompts/..."
 
-# 5. AI Studio Build & Gemini 网页端对话/异步任务（同样支持 --file / --new-chat / --tab-hint）
-& $py $cli build --mode default --model hydrogen --framework React --prompt "需求" --download-dir "C:\path\to\out" --extract
+# 5. Gemini 网页端 Task 异步任务（高优：简单/中等任务优于 Build）& AI Studio Build 整套工程（默认 MAX + Argon）
 & $py $cli ask --entry task --model hydrogen --file "需求文档.pdf" --prompt "异步任务提示词" --async-send
+& $py $cli build --mode max --model argon --framework React --prompt "完整整套项目需求" --download-dir "C:\path\to\out" --extract
 ```
 
 ### 4. 本地落地与验证

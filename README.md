@@ -35,17 +35,17 @@ python scripts/setup_skill.py --update
 
 1. **三站点免费与独立配额池统筹**
    - **`aistudio.google.com`（Playground & Build，`key_off` 网页免费额度）**
-     - 文本推理 / 长代码与 1M 长输出：`4 Hydrogen`（快、轻耗） / `4 Argon`（深度规划） / `Deep Research`（带 Search + URL context）
+     - 文本推理 / 长代码与 1M 长输出：`4 Hydrogen`（快、轻耗） / `4 Argon`（深度规划） / `Deep Research`（带 Search + URL context），默认自动拉到最高可用思考等级（如 `Extra High`）与最大输出上限（`1,048,576`）
      - 视觉生图 / 改图：`Nano Banana 2.1`（`gemini-nano-banana-2.1`，Flow 日限用完后接力兜底）
      - 视频生成：`Omni 1.2 Flash` / `Omni 1.1 Flash`
      - 完整歌曲生成：`Lyria 3.5`（直接导出完整 MP3）
      - 语音合成与多角色配音：`Gemini 3.8 Flash TTS`（直接导出 WAV）
-     - 整站前端工程生成与导出：`AI Studio Build`（支持 React / Next.js / Angular / Android，可下载 ZIP / Push to GitHub）
+     - 整套全栈工程生成与导出：`AI Studio Build`（适合从零构建完整整套项目，默认调至最高可用 `MAX` + `4 Argon`；简单任务勿用 Build）
    - **`flow.google.com`（Google Flow 独立点数池）**
      - `Nano Banana 2.1` 生图：**0 点数消耗（每日有数十张免费限额，默认按 `x1` 生成省着用）**，支持直接下载 `1K 原始尺寸` 或 `2K 已高清重塑`
      - `Omni 1.2 Flash` / `Veo 3.1 - Lite` 生视频：使用独立每月 Flow 点数池，不消耗本地 coding 配额
-   - **`gemini.google.com/app`（Pro 网页主配额 + 异步 Task）**
-     - 支持对话模式与异步 `任务 (Task)` 模式、完整 `4 Hydrogen` / `4 Argon` 模型、Canvas、制作音乐与 Deep Research
+   - **`gemini.google.com/app`（Pro 网页主配额 + 异步 Task，高优先级）**
+     - 支持对话模式与高优 **`任务 (Task)` 异步 Agent 模式**（`4 Hydrogen` 产出干净不乱加脚手架，简单/中等开发与调研任务优先级高于 AI Studio Build）、`4 Argon`、Canvas、制作音乐与 Deep Research
 2. **双通道执行架构（支持长任务复用与无弹窗上传本地设定）**
    - **通道 A（最稳首选）：AgentLimb MCP** — 复用你已登录的外部 Chrome（跨重启永久免弹窗授权，不改浏览器启动参数、不强杀进程、不掉已登录账号与扩展）；支持在同一个会话标签页连续续聊写长文/改代码，并支持在 AI Studio 通过 `DataTransfer` 无弹窗自动上传本地 `.md` / `.txt` / `.pdf` / 图片等资料。
    - **通道 B（备用）：Playwright CDP CLI（[`scripts/gemini_web.py`](scripts/gemini_web.py)）** — 在 Chrome 地址栏开启 `chrome://inspect/#remote-debugging`（或独立隔离工作目录）后配合 `daemon` 使用，支持多端用量巡检、对话、异步任务、生图、生视频、作曲、TTS 与 Build 工程导出；支持 **`--file` / `--system-file` / `attach`** 无弹窗直传本地文件，且默认复用当前同类会话窗口（开新对话传 `--new-chat`）。*(注：Chrome 136+ 已禁止对默认 `User Data` 使用 `--remote-debugging-port=9222`，日常主力多账号环境强烈建议直接用通道 A)*。
@@ -132,11 +132,11 @@ python .\scripts\inspect_antigravity.py --markdown   # 仅 Antigravity 环境按
 & $py $cli playground --model lyria --prompt "inspiring synthwave background music, 118bpm" --download-dir "./out"
 & $py $cli playground --model tts --prompt "欢迎使用 Gemini Web-Agent 调度三端免费额度！" --download-dir "./out"
 
-# 4. 仅挂载本地文件到已打开标签页 + AI Studio Build 导出 + Gemini 网页异步任务
+# 4. 仅挂载本地文件到已打开标签页 + Gemini 高优异步 Task + AI Studio Build 整套工程导出（默认 MAX + Argon）
 & $py $cli attach --site aistudio --file "./补充资料.txt"
-& $py $cli build --mode default --model hydrogen --framework React --prompt "一个极简番茄钟网页应用" --download-dir "./out" --extract
-& $py $cli ask --entry task --model hydrogen --file "./需求说明.pdf" --prompt "异步调研任务..." --async-send
+& $py $cli ask --entry task --model hydrogen --file "./需求说明.pdf" --prompt "异步调研/轻量原型任务..." --async-send
 & $py $cli fetch --raw
+& $py $cli build --mode max --model argon --framework React --prompt "一整套完整全栈/多页应用需求" --download-dir "./out" --extract
 ```
 
 ---

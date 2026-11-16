@@ -672,6 +672,80 @@ def _aistudio_set_system_instruction(page, system_instruction: str) -> None:
     page.wait_for_timeout(300)
 
 
+def _aistudio_tune_playground_max(page, thinking_level: str = "max", max_output: bool = True) -> dict:
+    """尽量将 AI Studio Playground 的 Thinking level 调到最高可用挡位，并将 Output length 拉满。"""
+    applied: dict = {}
+    tl_mode = (thinking_level or "").strip().lower()
+    if tl_mode and tl_mode != "default":
+        tl = page.locator('mat-select[aria-label="Thinking Level"]').first
+        if tl.count() > 0 and tl.is_visible():
+            tl.click()
+            page.wait_for_timeout(300)
+            chosen = page.evaluate(
+                """(mode) => {
+                    const opts = Array.from(document.querySelectorAll('.cdk-overlay-pane mat-option')).filter(o => {
+                        const dis = o.getAttribute('aria-disabled') === 'true' || o.classList.contains('mdc-list-item--disabled');
+                        const txt = (o.innerText || '').trim();
+                        return !dis && !/\\bpaid\\b/i.test(txt);
+                    });
+                    if (!opts.length) return '';
+                    let target = null;
+                    if (mode === 'max') {
+                        target = opts.find(o => /extra\\s*high/i.test(o.innerText || ''))
+                              || opts.find(o => /^high$/i.test((o.innerText || '').trim()))
+                              || opts[opts.length - 1];
+                    } else {
+                        target = opts.find(o => (o.innerText || '').toLowerCase().includes(mode));
+                    }
+                    if (!target) return '';
+                    const label = (target.innerText || '').replace(/\\s+/g, ' ').trim();
+                    target.click();
+                    return label;
+                }""",
+                tl_mode,
+            )
+            if chosen:
+                applied["thinking_level"] = chosen
+            else:
+                page.keyboard.press("Escape")
+            page.wait_for_timeout(250)
+
+    if max_output:
+        max_set = page.evaluate(
+            """() => {
+                let outInp = document.querySelector('input[name="maxOutputTokens"], input[aria-label="Maximum output tokens"]');
+                if (!outInp || outInp.getBoundingClientRect().height <= 0) {
+                    const adv = Array.from(document.querySelectorAll('button, mat-expansion-panel-header')).find(
+                        el => /advanced\\s*settings/i.test(el.innerText || '')
+                    );
+                    if (adv) adv.click();
+                }
+                return !!document.querySelector('input[name="maxOutputTokens"], input[aria-label="Maximum output tokens"]');
+            }"""
+        )
+        page.wait_for_timeout(350)
+        if max_set:
+            new_val = page.evaluate(
+                """() => {
+                    const outInp = document.querySelector('input[name="maxOutputTokens"], input[aria-label="Maximum output tokens"]');
+                    if (!outInp || outInp.getBoundingClientRect().height <= 0) return '';
+                    const maxVal = outInp.max || '1048576';
+                    if (outInp.value !== maxVal) {
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                        setter.call(outInp, maxVal);
+                        outInp.dispatchEvent(new Event('input', { bubbles: true }));
+                        outInp.dispatchEvent(new Event('change', { bubbles: true }));
+                        outInp.dispatchEvent(new Event('blur', { bubbles: true }));
+                    }
+                    return outInp.value;
+                }"""
+            )
+            if new_val:
+                applied["max_output_tokens"] = new_val
+            page.wait_for_timeout(200)
+    return applied
+
+
 def _aistudio_click_run(page, prompt_box) -> None:
     """精确点击主运行按钮，避开 button.rerun-button。"""
     clicked = page.evaluate(
@@ -983,11 +1057,13 @@ def execute_playground(
     system_instruction: str = "",
     system_file: str = "",
     files: list[str] | None = None,
-    new_tab: bool = True,
+    new_tab: bool = False,
     tab_url_hint: str = "",
     async_send: bool = False,
     timeout_sec: int = 180,
     download_dir: str = "",
+    thinking_level: str = "max",
+    max_output: bool = True,
 ) -> dict:
     """在 AI Studio Playground 全工作台执行对话/生图/生视频/Lyria音乐/TTS配音/Deep Research。"""
     t0 = time.time()
@@ -1034,6 +1110,8 @@ def execute_playground(
 
     if sys_text:
         _aistudio_set_system_instruction(page, sys_text)
+
+    tuned = _aistudio_tune_playground_max(page, thinking_level=thinking_level, max_output=max_output)
 
     attached_files = _aistudio_attach_files(page, file_paths) if file_paths else []
 
@@ -1099,6 +1177,7 @@ def execute_playground(
         "video_count": len(extracted.get("videoBlobs", [])),
         "saved_files": extracted.get("saved_files", []),
         "attached_files": attached_files,
+        "run_settings": tuned,
         "elapsed_sec": round(time.time() - t0, 2),
     }
 
@@ -1196,25 +1275,47 @@ def _aistudio_build_configure(page, model: str = "", framework: str = "") -> Non
         raise RuntimeError("未找到 AI Studio Build 应用级设置按钮")
     page.wait_for_timeout(500)
 
-    def _pick_mat_select(selector_locator, target_text: str, label: str) -> None:
+    def _pick_mat_select(selector_locator, target_text: str, label: str, skip_paid: bool = False, fallback_text: str = "") -> None:
         if selector_locator.count() == 0:
             raise RuntimeError(f"未找到 Build {label} 下拉框")
         selector_locator.click()
         page.wait_for_timeout(350)
         opts = page.locator(".cdk-overlay-pane mat-option")
-        t_low = target_text.strip().lower()
-        for i in range(opts.count()):
-            opt = opts.nth(i)
-            if t_low in (opt.inner_text() or "").strip().lower():
-                opt.click()
-                page.wait_for_timeout(300)
-                return
+
+        def _try_pick(needle: str) -> bool:
+            n_low = needle.strip().lower()
+            for i in range(opts.count()):
+                opt = opts.nth(i)
+                txt = (opt.inner_text() or "").strip()
+                t_low = txt.lower()
+                if skip_paid and re.search(r"\bpaid\b", t_low):
+                    continue
+                if opt.get_attribute("aria-disabled") == "true":
+                    continue
+                if n_low in t_low:
+                    opt.click()
+                    page.wait_for_timeout(300)
+                    return True
+            return False
+
+        if _try_pick(target_text):
+            return
+        if fallback_text and _try_pick(fallback_text):
+            return
         page.keyboard.press("Escape")
         raise RuntimeError(f"Build {label} 中未找到匹配项: {target_text}")
 
     if model:
         resolved = _resolve_aistudio_model_name(model)
-        _pick_mat_select(page.locator('mat-select[aria-label="Select the model for chat"]').first, resolved, "模型")
+        allow_paid = "paid" in model.lower()
+        fallback = "Gemini 4 Hydrogen" if not allow_paid and "argon" in resolved.lower() else ""
+        _pick_mat_select(
+            page.locator('mat-select[aria-label="Select the model for chat"]').first,
+            resolved,
+            "模型",
+            skip_paid=not allow_paid,
+            fallback_text=fallback,
+        )
     if framework:
         selects = page.locator("mat-select")
         fw_select = None
@@ -1279,8 +1380,8 @@ def execute_build(
     browser,
     prompt: str = "",
     app_url: str = "",
-    mode: str = "",
-    model: str = "",
+    mode: str = "max",
+    model: str = "argon",
     framework: str = "",
     download_dir: str = "",
     extract: bool = False,
@@ -1811,6 +1912,8 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
                         async_send=body.get("async_send", False),
                         timeout_sec=body.get("timeout_sec", 180),
                         download_dir=body.get("download_dir", ""),
+                        thinking_level=body.get("thinking_level", "max"),
+                        max_output=body.get("max_output", True),
                     )
                 elif path == "/attach":
                     box["result"] = execute_attach(
@@ -1824,8 +1927,8 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
                         browser,
                         prompt=body.get("prompt", ""),
                         app_url=body.get("app_url", ""),
-                        mode=body.get("mode", ""),
-                        model=body.get("model", ""),
+                        mode=body.get("mode", "max"),
+                        model=body.get("model", "argon"),
                         framework=body.get("framework", ""),
                         download_dir=body.get("download_dir", ""),
                         extract=body.get("extract", False),
@@ -1940,6 +2043,8 @@ def main() -> None:
     p_pg.add_argument("--system", default="", help="系统指令 (System Instructions)")
     p_pg.add_argument("--system-file", default="", help="从本地文件读取文本并写入 System Instructions（如世界观设定 .md/.txt）")
     p_pg.add_argument("--file", dest="files", action="append", default=[], help="无弹窗上传本地文件（可多次传入，支持 txt/md/pdf/docx/图片/音视频）")
+    p_pg.add_argument("--thinking-level", default="max", help="思考等级: max(默认自动选最高如 Extra High) | high | medium | low | default(保留默认)")
+    p_pg.add_argument("--no-max-output", action="store_true", help="不自动将 Output length 拉满至模型上限(1048576)")
     p_pg.add_argument("--download-dir", default="", help="将生成的图片(PNG)/视频(MP4)/音乐(MP3)/配音(WAV)落盘到指定目录")
     p_pg.add_argument("--reuse-tab", action="store_true", help="显式复用已有 AI Studio 标签页继续对话（默认已优先复用）")
     p_pg.add_argument("--new-chat", action="store_true", help="强制新开一个 AI Studio 对话窗口")
@@ -1955,11 +2060,11 @@ def main() -> None:
     p_attach.add_argument("--tab-hint", default="", help="目标会话 URL 或片段")
     p_attach.add_argument("--port", type=int, default=None)
 
-    p_build = sub.add_parser("build", help="在 AI Studio Build 创建/迭代全栈项目并下载 ZIP")
-    p_build.add_argument("--prompt", "-p", default="", help="应用需求或修改指令（可省略以仅导出已有项目）")
+    p_build = sub.add_parser("build", help="在 AI Studio Build 创建/迭代全套整站工程并下载 ZIP（简单任务请优先用 ask --entry task）")
+    p_build.add_argument("--prompt", "-p", default="", help="整套应用需求或修改指令（可省略以仅导出已有项目）")
     p_build.add_argument("--app-url", default="", help="已有 AI Studio Build 应用 URL（用于迭代或直接导出 ZIP）")
-    p_build.add_argument("--mode", default="", choices=["", "default", "plan", "max"], help="Build 模式: default | plan | max")
-    p_build.add_argument("--model", "-m", default="", help="聊天模型: hydrogen | argon")
+    p_build.add_argument("--mode", default="max", choices=["", "default", "plan", "max"], help="Build 模式: max(默认最高可用) | plan | default")
+    p_build.add_argument("--model", "-m", default="argon", help="聊天模型: argon(默认最高免费可用) | hydrogen")
     p_build.add_argument("--framework", default="", help="目标框架: React | Next.js | Angular | XR Blocks | Android")
     p_build.add_argument("--download-dir", default="", help="下载项目 ZIP 的本地目录")
     p_build.add_argument("--extract", action="store_true", help="下载 ZIP 后自动解压到同名目录")
@@ -2069,6 +2174,8 @@ def main() -> None:
             "async_send": args.async_send,
             "timeout_sec": args.timeout,
             "download_dir": args.download_dir,
+            "thinking_level": args.thinking_level,
+            "max_output": not args.no_max_output,
         }
         res = _exec_cdp(
             args.port,
@@ -2086,6 +2193,8 @@ def main() -> None:
                 async_send=args.async_send,
                 timeout_sec=args.timeout,
                 download_dir=args.download_dir,
+                thinking_level=args.thinking_level,
+                max_output=not args.no_max_output,
             ),
         )
         _print_result(res, args.raw, ("text", "url"))
