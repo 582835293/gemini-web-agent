@@ -47,8 +47,8 @@ python scripts/setup_skill.py --update
    - **`gemini.google.com/app`（Pro 网页主配额 + 异步 Task）**
      - 支持对话模式与异步 `任务 (Task)` 模式、完整 `4 Hydrogen` / `4 Argon` 模型、Canvas、制作音乐与 Deep Research
 2. **双通道执行架构（支持长任务复用与无弹窗上传本地设定）**
-   - **通道 A（首选）：AgentLimb MCP** — 复用你已登录的外部 Chrome（跨重启永久免弹窗授权，直接 DOM/JS 注入与 Blob/Base64 产物落盘）；支持在同一个会话标签页连续续聊写长文/改代码，并支持在 AI Studio 通过 `DataTransfer` 无弹窗自动上传本地 `.md` / `.txt` / `.pdf` / 图片等资料。
-   - **通道 B（备用）：Playwright CDP CLI（[`scripts/gemini_web.py`](scripts/gemini_web.py)）** — 通过 Chrome DevTools 调试端口执行多端用量巡检、对话、异步任务、生图、生视频、作曲、TTS 与 Build 工程导出；支持 **`--file` / `--system-file` / `attach`** 无弹窗直传本地文件，且默认复用当前同类会话窗口（开新对话传 `--new-chat`）。
+   - **通道 A（最稳首选）：AgentLimb MCP** — 复用你已登录的外部 Chrome（跨重启永久免弹窗授权，不改浏览器启动参数、不强杀进程、不掉已登录账号与扩展）；支持在同一个会话标签页连续续聊写长文/改代码，并支持在 AI Studio 通过 `DataTransfer` 无弹窗自动上传本地 `.md` / `.txt` / `.pdf` / 图片等资料。
+   - **通道 B（备用）：Playwright CDP CLI（[`scripts/gemini_web.py`](scripts/gemini_web.py)）** — 在 Chrome 地址栏开启 `chrome://inspect/#remote-debugging`（或独立隔离工作目录）后配合 `daemon` 使用，支持多端用量巡检、对话、异步任务、生图、生视频、作曲、TTS 与 Build 工程导出；支持 **`--file` / `--system-file` / `attach`** 无弹窗直传本地文件，且默认复用当前同类会话窗口（开新对话传 `--new-chat`）。*(注：Chrome 136+ 已禁止对默认 `User Data` 使用 `--remote-debugging-port=9222`，日常主力多账号环境强烈建议直接用通道 A)*。
 3. **先查后用，额度感知调度（内置 Antigravity 本地双轨与路由检测）**
    - 激活后支持巡检 `gemini.google.com/usage` 与 `flow.google.com` 独立点数余额，并**内置 [`scripts/inspect_antigravity.py`](scripts/inspect_antigravity.py)**（纯标准库零依赖，可探测本地 Antigravity Connect-RPC 双轨配额、SQLite `gen_metadata` 后端实际路由与四维 Token 消耗；Claude Code / Codex 等客户端自动跳过本地对比，直接分流省额度）。
 4. **附带实战示例切图脚本（[`scripts/slice_sprites.py`](scripts/slice_sprites.py)，可选参考）**

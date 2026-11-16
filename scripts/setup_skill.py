@@ -503,26 +503,28 @@ def main() -> None:
     cdp_info = detect_chrome_cdp()
     version_meta = _read_version_meta(target_dir)
 
+    safety_rules = [
+        "严禁 AI 擅自 taskkill / 强杀用户正在运行的 Chrome 进程，也严禁擅自传入临时 --user-data-dir 重启或复制默认 User Data 目录。",
+        "Chrome 136+ 已禁止对默认 User Data 目录直接传 --remote-debugging-port=9222；强制切目录或强杀进程会导致已登录多账号与扩展失效。",
+    ]
+
     next_actions = []
     if not venv_info["dependencies_ready"]:
         next_actions.append(
             f"请检查网络并手动执行: \"{venv_info['venv_python']}\" -m pip install -r \"{target_dir / 'requirements.txt'}\""
         )
     if not agentlimb_info["configured"] and not cdp_info["cdp_active"]:
-        chrome_cmd = (
-            f'"{cdp_info["chrome_executable"]}" --remote-debugging-port=9222'
-            if cdp_info["chrome_executable"]
-            else "chrome --remote-debugging-port=9222"
-        )
         next_actions.append(
-            "未检测到 AgentLimb MCP 与已开启的 Chrome 远程调试端口。推荐二选一："
-            " (1) 安装并启用 AgentLimb MCP（永久免弹窗，参见 references/agentlimb.md）；"
-            f" 或 (2) 关闭现有 Chrome 后用 `{chrome_cmd}` 重启 Chrome 启用通道 B CDP 脚本。"
+            "未检测到 AgentLimb MCP 与已开启的 Chrome 远程调试端口。强烈推荐首选方案 (1)："
+            " (1) 安装并启用 AgentLimb 扩展 MCP >= v0.8.2（https://github.com/hooosberg/AgentLimb ，"
+            "不改 Chrome 启动参数、重启电脑后原账号与扩展直接可用，参见 references/agentlimb.md）；"
+            " 或 (2) 若坚持使用无扩展通道 B：请让用户在当前已打开的 Chrome 地址栏自行访问 "
+            "chrome://inspect/#remote-debugging 开启内置调试开关（严禁强杀 Chrome 或用临时 --user-data-dir 重启）。"
         )
     elif agentlimb_info["configured"] and cdp_info["cdp_mode"] == "chrome_ui_approval_required":
         next_actions.append(
-            "通道 A (AgentLimb MCP) 已就绪。检测到 Chrome 当前通过浏览器内开关监听调试端口（/json/version 未暴露），"
-            "通道 B 若出现连接超时：请在 Chrome 弹出的「允许远程调试」框点击允许，或改用 --remote-debugging-port=9222 启动 Chrome。"
+            "通道 A (AgentLimb MCP) 已就绪，推荐直接使用通道 A。检测到 Chrome 当前通过浏览器内开关监听调试端口（/json/version 未暴露），"
+            "若必须切换通道 B 且连接挂起：建议先启动 `gemini_web.py daemon` 并在 Chrome 弹出的「允许远程调试」框点一次允许即可复用长连接（切勿强杀或改用临时 --user-data-dir 重启 Chrome）。"
         )
     elif agentlimb_info["configured"]:
         next_actions.append("通道 A (AgentLimb MCP) 已就绪，可直接操控已登录外部 Chrome；通道 B (gemini_web.py) 已配齐备用。")
@@ -543,6 +545,7 @@ def main() -> None:
         "venv": venv_info,
         "channel_a_agentlimb": agentlimb_info,
         "channel_b_cdp": cdp_info,
+        "safety_rules": safety_rules,
         "next_actions": next_actions,
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))

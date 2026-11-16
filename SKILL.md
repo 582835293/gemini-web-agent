@@ -33,11 +33,12 @@ python scripts/setup_skill.py --auto
   ```
   - 若 `has_update == true`，先向用户简短告知有新版本（附 `remote_message`），经同意后直接跑 `--update` 即可无痛升级。
 
-- 读取脚本输出的 JSON：
-  - 若 `channel_a_agentlimb.configured == true`：直接通过 `agentlimb` MCP 控制外部 Chrome（推荐首选）。
+- 读取脚本输出的 JSON（**严格遵守浏览器账号安全红线**）：
+  - **【绝对红线】严禁 AI 擅自 `taskkill` / 强杀用户正在运行的 Chrome 进程，严禁擅自对日常 Chrome 添加 `--user-data-dir` 临时目录、修改桌面快捷方式或复制迁移 `User Data` 目录**（Chrome 136+ 已禁止对默认目录开启 `--remote-debugging-port`，强杀或切目录会导致原本已登录的多邮箱账号、Cookies 与浏览器扩展被隔离或注销，甚至触发新注册账号风控验证！）。
+  - 若 `channel_a_agentlimb.configured == true`：直接通过 `agentlimb` MCP 控制外部 Chrome（**最稳首选**，不改启动参数，重启电脑直接用）。
   - 若 `channel_a_agentlimb.configured == false` 且 `channel_b_cdp.cdp_http_ready == true`（或已完成 Chrome 远程调试确认）：直接使用 `venv.venv_python` 搭配 `cli_script` 走 Chrome CDP 备用通道。
-  - 若 `channel_b_cdp.cdp_mode == "chrome_ui_approval_required"`：说明 Chrome 是通过浏览器内开关监听调试端口（未暴露 `/json/version`），若切通道 B 遇连接挂起，提示用户在 Chrome 弹窗点“允许远程调试”或改用 `--remote-debugging-port=9222` 启动 Chrome。
-  - 若两通道均未开启：向用户展示 `next_actions` 提示其安装 `AgentLimb` 或使用脚本检测到的 Chrome 路径带 `--remote-debugging-port=9222` 启动一次即可。
+  - 若 `channel_b_cdp.cdp_mode == "chrome_ui_approval_required"`：说明 Chrome 是通过浏览器内开关监听调试端口（未暴露 `/json/version`）；优先安装/切回通道 A，若必须用通道 B，建议运行 `gemini_web.py daemon` 并在 Chrome 弹窗点一次“允许远程调试”（避免每条命令重复弹窗）。
+  - 若两通道均未开启：**强烈推荐引导用户直接安装 AgentLimb 扩展 MCP**（https://github.com/hooosberg/AgentLimb `>= v0.8.2`）；若用户坚持走无扩展通道 B，仅允许指导用户在现有 Chrome 地址栏手动打开 `chrome://inspect/#remote-debugging` 启用内置调试开关（不改启动参数、不强关浏览器）。
 
 ---
 
@@ -146,7 +147,7 @@ python scripts/setup_skill.py --auto
      - 首次新开对话导航到带 `?model=<model-id>` 的 URL（如 `gemini-4-hydrogen`、`gemini-4-argon`、`gemini-nano-banana-2.1`、`gemini-omni-1.2-flash`、`deep-research-preview-04-2026`）；同任务续写直接复用原 `tabId`。
      - **无弹窗上传本地设定 / 资料（支持 `.md` / `.txt` / `.pdf` / `.docx` / 图片 / 音视频）**：
        1. 若要保留全局长设定（如小说世界观、项目规范），优先点击 `.system-instructions-card` 写入 **System Instructions**；
-       2. 需要以**附件芯片**形式传任意本地文件时，用本地命令行将文件读为 Base64，在目标 Tab 通过 `javascript_eval` 构造 `new File([bytes], filename, { type })` 放入 `DataTransfer`，赋给 `ms-add-media-button input[type="file"], input.file-input` 的 `.files` 并派发 `new Event('change', { bubbles: true })`，等待输入区出现文件名且 `Loading...` 消失（显示 `X tokens`）即可（也可直接在开启 CDP 9222 时调 `gemini_web.py attach --file ...`）。
+       2. 需要以**附件芯片**形式传任意本地文件时，用本地命令行将文件读为 Base64，在目标 Tab 通过 `javascript_eval` 构造 `new File([bytes], filename, { type })` 放入 `DataTransfer`，赋给 `ms-add-media-button input[type="file"], input.file-input` 的 `.files` 并派发 `new Event('change', { bubbles: true })`，等待输入区出现文件名且 `Loading...` 消失（显示 `X tokens`）即可（若通道 B CDP 已连通，也可调 `gemini_web.py attach --file ...`）。
      - **输入与发送**：使用原生 setter + `InputEvent` 写入 `textarea[aria-label="Enter a prompt"]`，等待 `250ms` 后点击非 `.rerun-button` 的 `Run` 按钮。
      - **重要（虚拟滚动懒渲染）**：完成信号为 `.cdk-live-announcer-element` 出现 `"Response ready."`；提取内容前**务必先 `tab_activate(tabId)` 并 `turns[turns.length-1].scrollIntoView()`**！
      - 提取产物：文本读 `[data-turn-role="Model"] ms-cmark-node`（取最后一个非空节点）；图片读 `ms-chat-turn img[src^="blob:"]`（过滤 `naturalWidth > 200` 避开水印小图）及 `button[aria-label="Download"]`；视频读 `<ms-video-generation-gallery> video[src^="blob:"]` 及 `button[aria-label="Download video"]`（可直接浏览器上下文 `fetch(blobUrl)` 转 base64 落盘）。
