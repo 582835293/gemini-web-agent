@@ -344,10 +344,26 @@ def find_language_servers():
                         ["lsof", "-nP", "-a", "-p", str(pid), "-iTCP", "-sTCP:LISTEN"],
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=3,
                     )
                     for m_port in re.finditer(r":(\d+)\s+\(LISTEN\)", lp.stdout):
                         ports.append(int(m_port.group(1)))
+                elif shutil.which("ss"):
+                    sp = subprocess.run(
+                        ["ss", "-ltnp"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=3,
+                    )
+                    pid_tag = f"pid={pid}"
+                    for sline in sp.stdout.splitlines():
+                        if pid_tag in sline:
+                            for m_port in re.finditer(r":(\d+)\s+", sline):
+                                ports.append(int(m_port.group(1)))
                 score = 100 if "--standalone" in cmd else 50
                 candidates.append({
                     "pid": pid,

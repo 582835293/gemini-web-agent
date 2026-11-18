@@ -195,10 +195,12 @@ def get_cdp_ws_url(port_override: int | None = None) -> str:
     raise RuntimeError("未找到 DevToolsActivePort，请先在 Chrome 开启远程调试或使用 AgentLimb MCP。")
 
 
-def wait_gemini_ready(page, timeout_ms: int = 25000) -> None:
-    """等待输入框与模型切换按钮均渲染完成。"""
-    page.locator('div[role="textbox"]').first.wait_for(state="visible", timeout=timeout_ms)
-    page.locator('button[data-test-id="bard-mode-menu-button"]').first.wait_for(state="visible", timeout=timeout_ms)
+def wait_gemini_ready(page, timeout_ms: int = 45000) -> None:
+    """等待输入框与可见模型切换按钮渲染完成（兼容慢网冷启动及隐藏响应式副本）。"""
+    page.locator('div[role="textbox"]:visible').first.wait_for(state="visible", timeout=timeout_ms)
+    page.locator('button[data-test-id="bard-mode-menu-button"]:visible').first.wait_for(
+        state="visible", timeout=timeout_ms
+    )
 
 
 def get_gemini_page(browser, new_tab: bool = True, tab_url_hint: str = ""):
@@ -214,7 +216,7 @@ def get_gemini_page(browser, new_tab: bool = True, tab_url_hint: str = ""):
                     return page
         page = context.new_page()
         page.bring_to_front()
-        page.goto("https://gemini.google.com/app", wait_until="commit", timeout=30000)
+        page.goto("https://gemini.google.com/app", wait_until="domcontentloaded", timeout=45000)
         wait_gemini_ready(page)
         return page
 
@@ -246,7 +248,7 @@ def get_gemini_page(browser, new_tab: bool = True, tab_url_hint: str = ""):
 
     page = context.new_page()
     page.bring_to_front()
-    page.goto(target_url or "https://gemini.google.com/app", wait_until="commit", timeout=30000)
+    page.goto(target_url or "https://gemini.google.com/app", wait_until="domcontentloaded", timeout=45000)
     wait_gemini_ready(page)
     return page
 

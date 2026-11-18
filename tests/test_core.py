@@ -156,6 +156,13 @@ class TestSetupAndInspect(unittest.TestCase):
         self.assertIn("today(", brief)
         self.assertTrue(len(md) > 50)
 
+    def test_wait_gemini_ready_default_timeout_and_detect_chrome(self) -> None:
+        import inspect
+        sig = inspect.signature(gw.wait_gemini_ready)
+        self.assertGreaterEqual(sig.parameters["timeout_ms"].default, 45000)
+        cdp = ss.detect_chrome_cdp()
+        self.assertIn("cdp_mode", cdp)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

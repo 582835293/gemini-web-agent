@@ -91,13 +91,31 @@ def venv_python_path(skill_dir: Path) -> Path:
 
 
 def ensure_venv_and_deps(skill_dir: Path, skip_pip: bool = False) -> dict:
-    """确保 .venv 存在并安装了 playwright。"""
+    """确保 .venv 存在并安装了 playwright；缺 python3-venv 时给出清晰系统安装指引。"""
     py = venv_python_path(skill_dir)
     created_venv = False
+    venv_error = ""
     if not py.exists():
         venv_dir = skill_dir / ".venv"
-        venv.EnvBuilder(with_pip=True).create(str(venv_dir))
-        created_venv = True
+        try:
+            venv.EnvBuilder(with_pip=True).create(str(venv_dir))
+            created_venv = True
+        except Exception as e:
+            if venv_dir.exists():
+                shutil.rmtree(venv_dir, ignore_errors=True)
+            hint = (
+                "Linux/Ubuntu 缺少 venv/ensurepip 模块，请先执行: sudo apt update && sudo apt install -y python3-venv"
+                if platform.system().lower() == "linux"
+                else "请确认当前 Python 已包含 venv 与 pip 模块"
+            )
+            venv_error = f"创建 .venv 失败: {e}（{hint}）"
+            return {
+                "venv_python": str(py),
+                "venv_created": False,
+                "dependencies_ready": False,
+                "installed_now": False,
+                "pip_error": venv_error,
+            }
 
     def check_imports() -> bool:
         proc = subprocess.run(
@@ -245,8 +263,14 @@ def detect_chrome_cdp() -> dict:
         active_ports.append(Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "DevToolsActivePort")
         chrome_bins.append(Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
     else:
-        active_ports.append(Path.home() / ".config" / "google-chrome" / "DevToolsActivePort")
-        for cmd in ("google-chrome", "chromium", "chromium-browser"):
+        xdg_cfg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        active_ports.extend([
+            xdg_cfg / "google-chrome" / "DevToolsActivePort",
+            xdg_cfg / "google-chrome-beta" / "DevToolsActivePort",
+            xdg_cfg / "chromium" / "DevToolsActivePort",
+            xdg_cfg / "microsoft-edge" / "DevToolsActivePort",
+        ])
+        for cmd in ("google-chrome", "chromium", "chromium-browser", "microsoft-edge"):
             which = shutil.which(cmd)
             if which:
                 chrome_bins.append(Path(which))
@@ -530,6 +554,8 @@ def main() -> None:
 
     next_actions = []
     if not venv_info["dependencies_ready"]:
+        if venv_info.get("pip_error"):
+            next_actions.append(venv_info["pip_error"])
         next_actions.append(
             f"请检查网络并手动执行: \"{venv_info['venv_python']}\" -m pip install -r \"{target_dir / 'requirements.txt'}\""
         )
