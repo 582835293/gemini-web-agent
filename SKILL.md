@@ -98,7 +98,7 @@ python scripts/setup_skill.py --auto
    - Playground 未选中 API Key（左上工具栏显示 `key_off`）时直接使用 AI Studio 网页免费额度（`Paid` 模型除外）；若绑有 API Key，可在 `/rate-limit` 与 `/usage` 查看免费/付费层级 RPM/TPM/RPD。
 4. **本地 Antigravity 实时额度与底层路由对比（内置脚本，仅 Antigravity 环境按需执行；Claude Code / Codex / Cursor 等其他客户端请直接跳过此步）**：
    ```powershell
-   # 直接调用本 Skill 内置的 inspect_antigravity.py（纯 Python 标准库，无需额外安装外部监控技能）
+   # 直接调用本 Skill 内置的 inspect_antigravity.py（纯 Python 标准库，默认极速增量扫描最近活跃会话与实时额度，~0.3s；可选 --all-history 扫描全量历史，--live-only 仅查配额）
    python "$env:USERPROFILE\.gemini\config\skills\gemini-web-agent\scripts\inspect_antigravity.py" --markdown
    ```
    > macOS / Linux 可直接执行本 Skill 目录下的 `python3 scripts/inspect_antigravity.py --markdown`。非 Antigravity 客户端（如 Claude Code / Codex）跳过本地对比，仅巡检网页端 `/usage` 与 Flow 点数即可。
@@ -147,7 +147,9 @@ python scripts/setup_skill.py --auto
    - 切 `<gem-segmented-button>`（`对话` / `任务`）及 `bard-mode-menu-button`（`4 Hydrogen` / `4 Argon`），按需选 `上传和工具`（`制作音乐` / `Canvas` / `Deep Research` / 兜底 `制作图片` / `制作视频`）。
    - **禁止设 `innerHTML`**（`TrustedHTML` CSP），用 `textContent` + `InputEvent('insertText')` 注入后点 `button[aria-label="发送"]`。
 
-4. **收尾**：调用 `agentlimb:say` 释放面板状态。
+4. **收尾与释放**：
+   - 通道 A：调用 `agentlimb:say` 告知用户任务完成，释放 Chrome 侧边栏常驻运行状态（避免界面悬挂“正在操作”/“等待回复”）。
+   - 通道 B（CLI 备用）：`gemini_web.py` 已内置 5000ms CDP 快速失败、正向 DOM 状态机与 10 分钟空闲自动回收，确保前台同步返回，不残留未终止的后台进程。
 
 #### 通道 B（CLI 备用）：Playwright CDP 脚本（支持三站全模态 + 自动落盘）
 ```powershell

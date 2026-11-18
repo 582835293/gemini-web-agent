@@ -19,10 +19,17 @@ import sqlite3
 import subprocess
 import urllib.request
 import ssl
+import time
+import tempfile
+import argparse
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 from contextlib import closing
+
+# 缓存路径
+RPC_CACHE_PATH = os.path.join(tempfile.gettempdir(), "antigravity_rpc_cache.json")
+DB_CACHE_PATH = os.path.join(tempfile.gettempdir(), "antigravity_db_cache.json")
 
 # 适配 Windows 终端 UTF-8 输出
 if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
@@ -142,7 +149,7 @@ def open_readonly_db(db_path: str):
 # 2. 本地 Language Server Connect-RPC 探测与配额拉取
 # ============================================================================
 
-def query_rpc(port: int, csrf_token: str, protocol: str, endpoint: str):
+def query_rpc(port: int, csrf_token: str, protocol: str, endpoint: str, timeout: float = 1.5):
     """调用本地 Connect-RPC 接口"""
     url = f"{protocol}://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/{endpoint}"
     body = b'{"wrapper_data":{}}'
@@ -158,7 +165,7 @@ def query_rpc(port: int, csrf_token: str, protocol: str, endpoint: str):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     try:
-        with urllib.request.urlopen(req, timeout=2.0, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             if resp.status == 200:
                 return json.loads(resp.read().decode("utf-8", errors="ignore"))
     except Exception:
@@ -167,53 +174,142 @@ def query_rpc(port: int, csrf_token: str, protocol: str, endpoint: str):
 
 
 def find_language_servers():
-    """扫描正在运行的 language_server 进程及其监听端口"""
+    """扫描正在运行的 language_server 进程及其监听端口（Windows 优先快速原生探测）"""
     candidates = []
     if sys.platform == "win32":
-        ps_cmd = (
-            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-            "Get-CimInstance Win32_Process | Where-Object { "
-            "($_.Name -like '*language_server*' -or $_.Name -like '*agy*') "
-            "-and $_.Name -notlike '*powershell*' -and $_.Name -notlike '*pwsh*' "
-            "-and $_.CommandLine -like '*--csrf_token*' "
-            "} | ForEach-Object { "
-            "$p = $_.ProcessId; "
-            "$ports = @(Get-NetTCPConnection -OwningProcess $p -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique); "
-            "[PSCustomObject]@{ pid = $p; name = $_.Name; exe = $_.ExecutablePath; cmd = $_.CommandLine; ports = $ports } "
-            "} | ConvertTo-Json -Compress"
-        )
+        # 1. Windows 原生轻量级探测 (tasklist + netstat + wmic, ~0.4s)
+        pids = []
         try:
-            proc = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
+            p_task = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH"],
                 capture_output=True,
-                timeout=8,
+                text=True,
+                timeout=3,
             )
-            out = proc.stdout.decode("utf-8", errors="ignore").strip()
-            if out:
-                parsed = json.loads(out)
-                if isinstance(parsed, dict):
-                    parsed = [parsed]
-                for item in parsed:
-                    pid = item.get("pid")
-                    cmd = item.get("cmd") or ""
-                    exe = item.get("exe") or ""
-                    ports = item.get("ports") or []
-                    if isinstance(ports, int):
-                        ports = [ports]
+            for row in p_task.stdout.splitlines():
+                row_s = row.strip()
+                if "language_server" in row_s.lower() or "agy" in row_s.lower():
+                    parts = [c.strip('"') for c in row_s.split('","')]
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        pids.append(int(parts[1]))
+        except Exception:
+            pass
+
+        if pids:
+            pid_ports = defaultdict(list)
+            try:
+                p_net = subprocess.run(
+                    ["netstat", "-ano", "-p", "tcp"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                pid_set = set(pids)
+                for line in p_net.stdout.splitlines():
+                    if "LISTENING" in line:
+                        toks = line.split()
+                        if len(toks) >= 5 and toks[-1].isdigit():
+                            l_pid = int(toks[-1])
+                            if l_pid in pid_set:
+                                try:
+                                    port_num = int(toks[1].rsplit(":", 1)[-1])
+                                    pid_ports[l_pid].append(port_num)
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+
+            for pid in pids:
+                cmd_line = ""
+                exe_path = ""
+                try:
+                    p_wmic = subprocess.run(
+                        ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine,ExecutablePath", "/format:list"],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                    )
+                    for line in p_wmic.stdout.splitlines():
+                        if line.startswith("CommandLine="):
+                            cmd_line = line.split("=", 1)[1]
+                        elif line.startswith("ExecutablePath="):
+                            exe_path = line.split("=", 1)[1]
+                except Exception:
+                    pass
+
+                if not cmd_line or "--csrf_token" not in cmd_line:
+                    try:
+                        ps_single = f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"
+                        p_ps = subprocess.run(
+                            ["powershell", "-NoProfile", "-Command", ps_single],
+                            capture_output=True,
+                            text=True,
+                            timeout=3,
+                        )
+                        cmd_line = p_ps.stdout.strip()
+                    except Exception:
+                        pass
+
+                if "--csrf_token" in cmd_line:
                     score = 0
-                    if "--standalone" in cmd or "Programs\\Antigravity\\resources" in exe:
+                    if "--standalone" in cmd_line or "Programs\\Antigravity\\resources" in exe_path:
                         score += 100
-                    elif "Antigravity IDE" in exe:
+                    elif "Antigravity IDE" in exe_path:
                         score += 50
                     candidates.append({
                         "pid": pid,
-                        "cmd": cmd,
-                        "exe": exe,
-                        "ports": ports,
+                        "cmd": cmd_line,
+                        "exe": exe_path,
+                        "ports": sorted(set(pid_ports[pid])),
                         "score": score,
                     })
-        except Exception:
-            pass
+
+        # 2. 若原生轻量探测未捕获，降级使用全量 PowerShell WQL 探测
+        if not candidates:
+            ps_cmd = (
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                "Get-CimInstance Win32_Process | Where-Object { "
+                "($_.Name -like '*language_server*' -or $_.Name -like '*agy*') "
+                "-and $_.Name -notlike '*powershell*' -and $_.Name -notlike '*pwsh*' "
+                "-and $_.CommandLine -like '*--csrf_token*' "
+                "} | ForEach-Object { "
+                "$p = $_.ProcessId; "
+                "$ports = @(Get-NetTCPConnection -OwningProcess $p -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique); "
+                "[PSCustomObject]@{ pid = $p; name = $_.Name; exe = $_.ExecutablePath; cmd = $_.CommandLine; ports = $ports } "
+                "} | ConvertTo-Json -Compress"
+            )
+            try:
+                proc = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True,
+                    timeout=8,
+                )
+                out = proc.stdout.decode("utf-8", errors="ignore").strip()
+                if out:
+                    parsed = json.loads(out)
+                    if isinstance(parsed, dict):
+                        parsed = [parsed]
+                    for item in parsed:
+                        pid = item.get("pid")
+                        cmd = item.get("cmd") or ""
+                        exe = item.get("exe") or ""
+                        ports = item.get("ports") or []
+                        if isinstance(ports, int):
+                            ports = [ports]
+                        score = 0
+                        if "--standalone" in cmd or "Programs\\Antigravity\\resources" in exe:
+                            score += 100
+                        elif "Antigravity IDE" in exe:
+                            score += 50
+                        candidates.append({
+                            "pid": pid,
+                            "cmd": cmd,
+                            "exe": exe,
+                            "ports": ports,
+                            "score": score,
+                        })
+            except Exception:
+                pass
     else:
         try:
             proc = subprocess.run(
@@ -258,8 +354,30 @@ def find_language_servers():
     return candidates
 
 
-def fetch_live_rpc_data():
-    """自动探测并拉取 GetUserStatus 与 RetrieveUserQuotaSummary"""
+def fetch_live_rpc_data(use_cache: bool = True):
+    """自动探测并拉取 GetUserStatus 与 RetrieveUserQuotaSummary（支持端口缓存快速命中）"""
+    if use_cache and os.path.exists(RPC_CACHE_PATH):
+        try:
+            with open(RPC_CACHE_PATH, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            port = cached.get("port")
+            csrf_token = cached.get("csrf_token")
+            proto = cached.get("protocol", "http")
+            if port and csrf_token:
+                status = query_rpc(port, csrf_token, proto, "GetUserStatus", timeout=0.3)
+                if status and "userStatus" in status:
+                    quota_summary = query_rpc(port, csrf_token, proto, "RetrieveUserQuotaSummary", timeout=1.0)
+                    return {
+                        "pid": cached.get("pid"),
+                        "port": port,
+                        "protocol": proto,
+                        "exe": cached.get("exe"),
+                        "user_status": status["userStatus"],
+                        "quota_summary": quota_summary,
+                    }
+        except Exception:
+            pass
+
     candidates = find_language_servers()
     for cand in candidates:
         cmd = cand["cmd"]
@@ -271,9 +389,21 @@ def fetch_live_rpc_data():
         ports = cand.get("ports") or []
         for port in ports:
             for proto in ("http", "https"):
-                status = query_rpc(port, csrf_token, proto, "GetUserStatus")
+                status = query_rpc(port, csrf_token, proto, "GetUserStatus", timeout=0.6)
                 if status and "userStatus" in status:
-                    quota_summary = query_rpc(port, csrf_token, proto, "RetrieveUserQuotaSummary")
+                    quota_summary = query_rpc(port, csrf_token, proto, "RetrieveUserQuotaSummary", timeout=1.0)
+                    try:
+                        with open(RPC_CACHE_PATH, "w", encoding="utf-8") as f:
+                            json.dump({
+                                "pid": pid,
+                                "port": port,
+                                "protocol": proto,
+                                "csrf_token": csrf_token,
+                                "exe": cand.get("exe", ""),
+                                "saved_at": time.time(),
+                            }, f)
+                    except Exception:
+                        pass
                     return {
                         "pid": pid,
                         "port": port,
@@ -371,10 +501,66 @@ def get_context_window_for_model(routed_model: str):
     return 1048576, "1M"
 
 
-def analyze_all_databases(target_date: str = None):
-    """扫描所有会话数据库，统计 Token 消耗、上下文水位与后端真实路由历史"""
+def load_db_cache() -> dict:
+    if os.path.exists(DB_CACHE_PATH):
+        try:
+            with open(DB_CACHE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_db_cache(cache: dict) -> None:
+    try:
+        with open(DB_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def analyze_all_databases(
+    target_date: str = None,
+    recent_dbs: int = 3,
+    all_history: bool = False,
+    live_only: bool = False,
+    use_cache: bool = True,
+):
+    """扫描会话数据库，统计 Token 消耗、上下文水位与后端真实路由历史（支持极速增量缓存）"""
     if not target_date:
         target_date = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+
+    if live_only:
+        return {
+            "mode": "live_only",
+            "skipped": True,
+            "all_history": False,
+            "scanned_dbs": 0,
+            "today": {
+                "date": target_date,
+                "total_tokens": 0,
+                "input_tokens": 0,
+                "cached_tokens": 0,
+                "output_tokens": 0,
+                "thinking_tokens": 0,
+                "cache_hit_rate": 0.0,
+                "sessions": 0,
+                "turns": 0,
+                "by_routed_model": {},
+            },
+            "all_time": {
+                "total_tokens": 0,
+                "input_tokens": 0,
+                "cached_tokens": 0,
+                "output_tokens": 0,
+                "thinking_tokens": 0,
+                "cache_hit_rate": 0.0,
+                "sessions": 0,
+                "turns": 0,
+            },
+            "observed_backend_routes": {},
+            "recent_sessions": [],
+        }
 
     db_paths = []
     for s_dir in DATA_SOURCES:
@@ -384,6 +570,8 @@ def analyze_all_databases(target_date: str = None):
                     db_paths.append(f)
 
     db_paths.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    scanned_total = len(db_paths)
+    target_paths = db_paths if all_history else db_paths[:max(1, recent_dbs)]
 
     today_stats = {
         "date": target_date,
@@ -417,9 +605,13 @@ def analyze_all_databases(target_date: str = None):
     })
     sessions_list = []
 
-    for db_idx, db_path in enumerate(db_paths):
+    db_cache = load_db_cache() if use_cache else {}
+    cache_dirty = False
+
+    for db_idx, db_path in enumerate(target_paths):
         convo_id = os.path.splitext(os.path.basename(db_path))[0]
         db_mtime = os.path.getmtime(db_path)
+        db_size = os.path.getsize(db_path)
         mtime_str = datetime.fromtimestamp(db_mtime, LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")
         source_type = "antigravity"
         if "antigravity-ide" in db_path:
@@ -427,191 +619,251 @@ def analyze_all_databases(target_date: str = None):
         elif "antigravity-cli" in db_path:
             source_type = "antigravity-cli"
 
-        try:
-            with closing(open_readonly_db(db_path)) as con:
-                cur = con.cursor()
-                tables = {r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-                if "gen_metadata" not in tables:
-                    continue
+        cached = db_cache.get(db_path)
+        if use_cache and cached and cached.get("mtime") == db_mtime and cached.get("size") == db_size:
+            parsed = cached.get("data")
+        else:
+            parsed = None
+            try:
+                with closing(open_readonly_db(db_path)) as con:
+                    cur = con.cursor()
+                    tables = {r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                    if "gen_metadata" in tables:
+                        step_times = {}
+                        if "steps" in tables:
+                            try:
+                                for r_idx, meta in cur.execute("SELECT idx, metadata FROM steps WHERE metadata IS NOT NULL").fetchall():
+                                    s_proto = parse_proto(meta)
+                                    if 1 in s_proto:
+                                        for _, p in s_proto[1]:
+                                            sub_time = parse_proto(p)
+                                            if 1 in sub_time and sub_time[1]:
+                                                step_times[r_idx] = sub_time[1][0][1]
+                            except Exception:
+                                pass
 
-                step_times = {}
-                if "steps" in tables:
-                    try:
-                        for r_idx, meta in cur.execute("SELECT idx, metadata FROM steps WHERE metadata IS NOT NULL").fetchall():
-                            s_proto = parse_proto(meta)
-                            if 1 in s_proto:
-                                for _, p in s_proto[1]:
-                                    sub_time = parse_proto(p)
-                                    if 1 in sub_time and sub_time[1]:
-                                        step_times[r_idx] = sub_time[1][0][1]
-                    except Exception:
-                        pass
+                        setting_changes = extract_requested_models_from_steps(cur) if "steps" in tables else []
+                        rows = cur.execute("SELECT idx, data FROM gen_metadata ORDER BY idx ASC").fetchall()
 
-                setting_changes = extract_requested_models_from_steps(cur) if "steps" in tables else []
+                        if rows:
+                            sess_total = 0
+                            sess_inp = 0
+                            sess_cached = 0
+                            sess_out = 0
+                            sess_thinking = 0
+                            sess_turns = 0
 
-                rows = cur.execute("SELECT idx, data FROM gen_metadata ORDER BY idx ASC").fetchall()
-                if not rows:
-                    continue
+                            last_turn_inp = 0
+                            last_turn_cached = 0
+                            last_turn_out = 0
+                            last_turn_thinking = 0
+                            last_turn_context = 0
+                            last_routed_model = None
+                            last_step_idx = None
 
-                sess_total = 0
-                sess_inp = 0
-                sess_cached = 0
-                sess_out = 0
-                sess_thinking = 0
-                sess_turns = 0
-                sess_has_today = False
+                            route_transitions = []
+                            current_active_label = None
+                            change_ptr = 0
+                            turns_data = []
 
-                last_turn_inp = 0
-                last_turn_cached = 0
-                last_turn_out = 0
-                last_turn_thinking = 0
-                last_turn_context = 0
-                last_routed_model = None
-                last_step_idx = None
+                            for idx, data in rows:
+                                routed = extract_routed_model_from_blob(data)
+                                top = parse_proto(data)
+                                step_idx_resolved = idx
+                                turn_tot = 0
 
-                route_transitions = []
-                current_active_label = None
-                change_ptr = 0
+                                if 1 in top:
+                                    for _, p1 in top[1]:
+                                        sub1 = parse_proto(p1)
+                                        if 20 in sub1:
+                                            for _, b20 in sub1[20]:
+                                                if b"last_step_index" in b20:
+                                                    m_step = re.search(rb"last_step_index\x12[\x01-\x10](\d+)", b20)
+                                                    if m_step:
+                                                        try:
+                                                            step_idx_resolved = int(m_step.group(1))
+                                                            break
+                                                        except Exception:
+                                                            pass
 
-                for idx, data in rows:
-                    routed = extract_routed_model_from_blob(data)
-                    top = parse_proto(data)
-                    step_idx_resolved = idx
-                    turn_tot = 0
+                                        while change_ptr < len(setting_changes) and setting_changes[change_ptr]["step_idx"] <= step_idx_resolved:
+                                            current_active_label = setting_changes[change_ptr]["to"]
+                                            change_ptr += 1
 
-                    if 1 in top:
-                        for _, p1 in top[1]:
-                            sub1 = parse_proto(p1)
-                            if 20 in sub1:
-                                for _, b20 in sub1[20]:
-                                    if b"last_step_index" in b20:
-                                        m_step = re.search(rb"last_step_index\x12[\x01-\x10](\d+)", b20)
-                                        if m_step:
-                                            try:
-                                                step_idx_resolved = int(m_step.group(1))
-                                                break
-                                            except Exception:
-                                                pass
+                                        if 4 not in sub1:
+                                            continue
+                                        for _, p4 in sub1[4]:
+                                            usage = parse_proto(p4)
+                                            inp = usage.get(2, [(0, 0)])[0][1]
+                                            out = usage.get(3, [(0, 0)])[0][1]
+                                            cached_val = usage.get(5, [(0, 0)])[0][1]
+                                            thinking = usage.get(10, [(0, 0)])[0][1]
+                                            tot = inp + cached_val + out
+                                            turn_tot += tot
 
-                            while change_ptr < len(setting_changes) and setting_changes[change_ptr]["step_idx"] <= step_idx_resolved:
-                                current_active_label = setting_changes[change_ptr]["to"]
-                                change_ptr += 1
+                                            if inp + cached_val > 0:
+                                                last_turn_inp = inp
+                                                last_turn_cached = cached_val
+                                                last_turn_out = out
+                                                last_turn_thinking = thinking
+                                                last_turn_context = inp + cached_val
 
-                            if 4 not in sub1:
-                                continue
-                            for _, p4 in sub1[4]:
-                                usage = parse_proto(p4)
-                                inp = usage.get(2, [(0, 0)])[0][1]
-                                out = usage.get(3, [(0, 0)])[0][1]
-                                cached = usage.get(5, [(0, 0)])[0][1]
-                                thinking = usage.get(10, [(0, 0)])[0][1]
-                                tot = inp + cached + out
-                                turn_tot += tot
+                                            sess_total += tot
+                                            sess_inp += inp
+                                            sess_cached += cached_val
+                                            sess_out += out
+                                            sess_thinking += thinking
+                                            sess_turns += 1
 
-                                if inp + cached > 0:
-                                    last_turn_inp = inp
-                                    last_turn_cached = cached
-                                    last_turn_out = out
-                                    last_turn_thinking = thinking
-                                    last_turn_context = inp + cached
+                                            ts = step_times.get(step_idx_resolved) or step_times.get(idx) or int(db_mtime)
+                                            step_date = datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d")
+                                            turns_data.append({
+                                                "tot": tot,
+                                                "inp": inp,
+                                                "cached": cached_val,
+                                                "out": out,
+                                                "thinking": thinking,
+                                                "step_date": step_date,
+                                                "routed": routed,
+                                                "active_label": current_active_label,
+                                            })
 
-                                sess_total += tot
-                                sess_inp += inp
-                                sess_cached += cached
-                                sess_out += out
-                                sess_thinking += thinking
-                                sess_turns += 1
+                                if routed:
+                                    last_routed_model = routed
+                                    last_step_idx = idx
+                                    if not route_transitions or route_transitions[-1]["routed_model"] != routed:
+                                        route_transitions.append({
+                                            "gen_idx": idx,
+                                            "step_idx": step_idx_resolved,
+                                            "routed_model": routed,
+                                            "ui_label": current_active_label or "",
+                                        })
 
-                                all_time_stats["total_tokens"] += tot
-                                all_time_stats["input_tokens"] += inp
-                                all_time_stats["cached_tokens"] += cached
-                                all_time_stats["output_tokens"] += out
-                                all_time_stats["thinking_tokens"] += thinking
-                                all_time_stats["turns"] += 1
+                            title = extract_session_title(cur)
+                            parsed = {
+                                "sess_turns": sess_turns,
+                                "sess_total": sess_total,
+                                "sess_inp": sess_inp,
+                                "sess_cached": sess_cached,
+                                "sess_out": sess_out,
+                                "sess_thinking": sess_thinking,
+                                "last_turn_inp": last_turn_inp,
+                                "last_turn_cached": last_turn_cached,
+                                "last_turn_out": last_turn_out,
+                                "last_turn_thinking": last_turn_thinking,
+                                "last_turn_context": last_turn_context,
+                                "last_routed_model": last_routed_model,
+                                "last_step_idx": last_step_idx,
+                                "title": title,
+                                "route_transitions": route_transitions,
+                                "setting_changes": setting_changes,
+                                "turns_data": turns_data,
+                            }
+            except Exception:
+                parsed = None
 
-                                ts = step_times.get(step_idx_resolved) or step_times.get(idx) or int(db_mtime)
-                                step_date = datetime.fromtimestamp(ts, LOCAL_TZ).strftime("%Y-%m-%d")
-                                if step_date == target_date:
-                                    sess_has_today = True
-                                    today_stats["total_tokens"] += tot
-                                    today_stats["input_tokens"] += inp
-                                    today_stats["cached_tokens"] += cached
-                                    today_stats["output_tokens"] += out
-                                    today_stats["thinking_tokens"] += thinking
-                                    today_stats["turns"] += 1
-                                    rm_key = routed or last_routed_model or "unknown"
-                                    bm = today_stats["by_routed_model"][rm_key]
-                                    bm["turns"] += 1
-                                    bm["total"] += tot
-                                    bm["input"] += inp
-                                    bm["cached"] += cached
-                                    bm["output"] += out
-                                    bm["thinking"] += thinking
+            if parsed is not None:
+                db_cache[db_path] = {
+                    "mtime": db_mtime,
+                    "size": db_size,
+                    "data": parsed,
+                }
+                cache_dirty = True
 
-                    if routed:
-                        last_routed_model = routed
-                        last_step_idx = idx
-                        obs = observed_routed_models[routed]
-                        obs["count"] += 1
-                        obs["total_tokens"] += turn_tot
-                        if not obs["last_seen"] or mtime_str > obs["last_seen"]:
-                            obs["last_seen"] = mtime_str
-                            obs["sample_session"] = convo_id
-                        if current_active_label:
-                            obs["matched_labels"].add(current_active_label)
-
-                        if not route_transitions or route_transitions[-1]["routed_model"] != routed:
-                            route_transitions.append({
-                                "gen_idx": idx,
-                                "step_idx": step_idx_resolved,
-                                "routed_model": routed,
-                                "ui_label": current_active_label or "",
-                            })
-
-                if sess_turns > 0:
-                    all_time_stats["sessions"] += 1
-                    if sess_has_today:
-                        today_stats["sessions"] += 1
-
-                    if db_idx < 8:
-                        title = extract_session_title(cur)
-                        ctx_win, ctx_lbl = get_context_window_for_model(last_routed_model)
-                        ctx_pct = round((last_turn_context / ctx_win) * 100, 2) if ctx_win > 0 else 0.0
-                        sess_cache_rate = round((sess_cached / (sess_inp + sess_cached)) * 100, 2) if (sess_inp + sess_cached) > 0 else 0.0
-                        last_turn_cache_rate = round((last_turn_cached / last_turn_context) * 100, 2) if last_turn_context > 0 else 0.0
-
-                        sessions_list.append({
-                            "conversation_id": convo_id,
-                            "source": source_type,
-                            "title": title,
-                            "updated_at": mtime_str,
-                            "turns": sess_turns,
-                            "last_gen_idx": last_step_idx,
-                            "routed_model": last_routed_model or "未识别",
-                            "route_transitions": route_transitions,
-                            "setting_changes": setting_changes,
-                            "context_window": ctx_win,
-                            "context_label": ctx_lbl,
-                            "context_tokens": last_turn_context,
-                            "context_pct": ctx_pct,
-                            "last_turn": {
-                                "input_tokens": last_turn_inp,
-                                "cached_tokens": last_turn_cached,
-                                "output_tokens": last_turn_out,
-                                "thinking_tokens": last_turn_thinking,
-                                "cache_hit_rate": last_turn_cache_rate,
-                            },
-                            "session_totals": {
-                                "total_tokens": sess_total,
-                                "input_tokens": sess_inp,
-                                "cached_tokens": sess_cached,
-                                "output_tokens": sess_out,
-                                "thinking_tokens": sess_thinking,
-                                "cache_hit_rate": sess_cache_rate,
-                            },
-                        })
-        except Exception:
+        if not parsed or parsed.get("sess_turns", 0) == 0:
             continue
+
+        sess_has_today = False
+        for t in parsed.get("turns_data", []):
+            tot = t["tot"]
+            inp = t["inp"]
+            cached_val = t["cached"]
+            out = t["out"]
+            thinking = t["thinking"]
+            step_date = t["step_date"]
+            routed = t.get("routed")
+            act_label = t.get("active_label")
+
+            all_time_stats["total_tokens"] += tot
+            all_time_stats["input_tokens"] += inp
+            all_time_stats["cached_tokens"] += cached_val
+            all_time_stats["output_tokens"] += out
+            all_time_stats["thinking_tokens"] += thinking
+            all_time_stats["turns"] += 1
+
+            if step_date == target_date:
+                sess_has_today = True
+                today_stats["total_tokens"] += tot
+                today_stats["input_tokens"] += inp
+                today_stats["cached_tokens"] += cached_val
+                today_stats["output_tokens"] += out
+                today_stats["thinking_tokens"] += thinking
+                today_stats["turns"] += 1
+                rm_key = routed or parsed.get("last_routed_model") or "unknown"
+                bm = today_stats["by_routed_model"][rm_key]
+                bm["turns"] += 1
+                bm["total"] += tot
+                bm["input"] += inp
+                bm["cached"] += cached_val
+                bm["output"] += out
+                bm["thinking"] += thinking
+
+            if routed:
+                obs = observed_routed_models[routed]
+                obs["count"] += 1
+                obs["total_tokens"] += tot
+                if not obs["last_seen"] or mtime_str > obs["last_seen"]:
+                    obs["last_seen"] = mtime_str
+                    obs["sample_session"] = convo_id
+                if act_label:
+                    obs["matched_labels"].add(act_label)
+
+        all_time_stats["sessions"] += 1
+        if sess_has_today:
+            today_stats["sessions"] += 1
+
+        if db_idx < 8:
+            last_rm = parsed.get("last_routed_model")
+            ctx_win, ctx_lbl = get_context_window_for_model(last_rm)
+            last_ctx = parsed.get("last_turn_context", 0)
+            ctx_pct = round((last_ctx / ctx_win) * 100, 2) if ctx_win > 0 else 0.0
+            s_inp_c = parsed.get("sess_inp", 0) + parsed.get("sess_cached", 0)
+            sess_cache_rate = round((parsed.get("sess_cached", 0) / s_inp_c) * 100, 2) if s_inp_c > 0 else 0.0
+            last_turn_cache_rate = round((parsed.get("last_turn_cached", 0) / last_ctx) * 100, 2) if last_ctx > 0 else 0.0
+
+            sessions_list.append({
+                "conversation_id": convo_id,
+                "source": source_type,
+                "title": parsed.get("title", ""),
+                "updated_at": mtime_str,
+                "turns": parsed.get("sess_turns", 0),
+                "last_gen_idx": parsed.get("last_step_idx"),
+                "routed_model": last_rm or "未识别",
+                "route_transitions": parsed.get("route_transitions", []),
+                "setting_changes": parsed.get("setting_changes", []),
+                "context_window": ctx_win,
+                "context_label": ctx_lbl,
+                "context_tokens": last_ctx,
+                "context_pct": ctx_pct,
+                "last_turn": {
+                    "input_tokens": parsed.get("last_turn_inp", 0),
+                    "cached_tokens": parsed.get("last_turn_cached", 0),
+                    "output_tokens": parsed.get("last_turn_out", 0),
+                    "thinking_tokens": parsed.get("last_turn_thinking", 0),
+                    "cache_hit_rate": last_turn_cache_rate,
+                },
+                "session_totals": {
+                    "total_tokens": parsed.get("sess_total", 0),
+                    "input_tokens": parsed.get("sess_inp", 0),
+                    "cached_tokens": parsed.get("sess_cached", 0),
+                    "output_tokens": parsed.get("sess_out", 0),
+                    "thinking_tokens": parsed.get("sess_thinking", 0),
+                    "cache_hit_rate": sess_cache_rate,
+                },
+            })
+
+    if cache_dirty:
+        save_db_cache(db_cache)
 
     prompt_today = today_stats["input_tokens"] + today_stats["cached_tokens"]
     if prompt_today > 0:
@@ -632,6 +884,10 @@ def analyze_all_databases(target_date: str = None):
         }
 
     return {
+        "skipped": False,
+        "all_history": all_history,
+        "scanned_dbs": len(target_paths),
+        "total_dbs": scanned_total,
         "today": today_stats,
         "all_time": all_time_stats,
         "recent_sessions": sessions_list,
@@ -717,9 +973,21 @@ def infer_backend_route(model_id: str, label: str, observed_routes: dict):
     return "未知路由"
 
 
-def build_full_report():
-    rpc_data = fetch_live_rpc_data()
-    db_data = analyze_all_databases()
+def build_full_report(
+    target_date: str = None,
+    recent_dbs: int = 3,
+    all_history: bool = False,
+    live_only: bool = False,
+    use_cache: bool = True,
+):
+    rpc_data = fetch_live_rpc_data(use_cache=use_cache)
+    db_data = analyze_all_databases(
+        target_date=target_date,
+        recent_dbs=recent_dbs,
+        all_history=all_history,
+        live_only=live_only,
+        use_cache=use_cache,
+    )
 
     report = {
         "generated_at": f"{datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')} ({local_tz_label()})",
@@ -883,29 +1151,37 @@ def render_markdown_report(report: dict) -> str:
     lines.append("")
 
     # 4. 今日消耗总量与四维拆解
-    td = ta.get("today", {})
-    at = ta.get("all_time", {})
-    lines.append(f"## 4. 今日 Token 消耗总量与四维缓存分析 (`{td.get('date', '')}`)")
-    lines.append("| 统计维度 | 今日累计数据 (`Today`) | 历史全量累计 (`All-Time`) |")
-    lines.append("| :--- | :--- | :--- |")
-    lines.append(f"| **活跃会话数 / 交互轮次** | `{td.get('sessions', 0)}` 个会话 / `{td.get('turns', 0):,}` 轮 | `{at.get('sessions', 0)}` 个会话 / `{at.get('turns', 0):,}` 轮 |")
-    lines.append(f"| **总消耗 Token (`Total`)** | **`{td.get('total_tokens', 0):,}`** (`{td.get('total_tokens', 0)/10000:.2f} 万`) | **`{at.get('total_tokens', 0):,}`** (`{at.get('total_tokens', 0)/100000000:.3f} 亿`) |")
-    lines.append(f"| **新鲜输入 (`Input Tokens`)** | `{td.get('input_tokens', 0):,}` (`{td.get('input_tokens', 0)/10000:.2f} 万`) | `{at.get('input_tokens', 0):,}` |")
-    lines.append(f"| **缓存命中 (`Cached Tokens`)** | `{td.get('cached_tokens', 0):,}` (`{td.get('cached_tokens', 0)/10000:.2f} 万`) | `{at.get('cached_tokens', 0):,}` |")
-    lines.append(f"| **生成输出 (`Output Tokens`)** | `{td.get('output_tokens', 0):,}` (`{td.get('output_tokens', 0)/10000:.2f} 万`) | `{at.get('output_tokens', 0):,}` |")
-    lines.append(f"| **思考推理 (`Thinking Tokens`)** | `{td.get('thinking_tokens', 0):,}` (`{td.get('thinking_tokens', 0)/10000:.2f} 万`) | `{at.get('thinking_tokens', 0):,}` |")
-    lines.append(f"| **提示词缓存命中率 (`Cache Hit Rate`)** | **`{td.get('cache_hit_rate', 0):.2f}%`** | **`{at.get('cache_hit_rate', 0):.2f}%`** |")
-    lines.append("")
-
-    if td.get("by_routed_model"):
-        lines.append("### 今日按实际后端路由模型拆分明细")
-        lines.append("| 实际后端路由模型 (`routed_model`) | 今日轮次 | 今日总 Token | 新鲜输入 (`Input`) | 缓存命中 (`Cached`) | 生成输出 (`Output`) | 思考推理 (`Thinking`) |")
-        lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
-        for rm_name, rm_val in td["by_routed_model"].items():
-            lines.append(
-                f"| `{rm_name}` | {rm_val['turns']} | `{rm_val['total']:,}` | `{rm_val['input']:,}` | `{rm_val['cached']:,}` | `{rm_val['output']:,}` | `{rm_val['thinking']:,}` |"
-            )
+    if ta.get("skipped"):
+        lines.append("## 4. 本地 SQLite 历史分析已跳过 (`--live-only`)")
+        lines.append("> ℹ️ 已开启 `--live-only` 模式，已跳过本地 SQLite 历史会话分析。")
         lines.append("")
+    else:
+        if not ta.get("all_history", False):
+            lines.append(f"> ⚡ 当前处于极速观测模式（分析最近 {ta.get('scanned_dbs', 3)} 个活跃会话）；可使用 `--all-history` 完整分析全部 {ta.get('total_dbs', 0)} 个历史会话。")
+            lines.append("")
+        td = ta.get("today", {})
+        at = ta.get("all_time", {})
+        lines.append(f"## 4. 今日 Token 消耗总量与四维缓存分析 (`{td.get('date', '')}`)")
+        lines.append("| 统计维度 | 今日累计数据 (`Today`) | 历史全量累计 (`All-Time`) |")
+        lines.append("| :--- | :--- | :--- |")
+        lines.append(f"| **活跃会话数 / 交互轮次** | `{td.get('sessions', 0)}` 个会话 / `{td.get('turns', 0):,}` 轮 | `{at.get('sessions', 0)}` 个会话 / `{at.get('turns', 0):,}` 轮 |")
+        lines.append(f"| **总消耗 Token (`Total`)** | **`{td.get('total_tokens', 0):,}`** (`{td.get('total_tokens', 0)/10000:.2f} 万`) | **`{at.get('total_tokens', 0):,}`** (`{at.get('total_tokens', 0)/100000000:.3f} 亿`) |")
+        lines.append(f"| **新鲜输入 (`Input Tokens`)** | `{td.get('input_tokens', 0):,}` (`{td.get('input_tokens', 0)/10000:.2f} 万`) | `{at.get('input_tokens', 0):,}` |")
+        lines.append(f"| **缓存命中 (`Cached Tokens`)** | `{td.get('cached_tokens', 0):,}` (`{td.get('cached_tokens', 0)/10000:.2f} 万`) | `{at.get('cached_tokens', 0):,}` |")
+        lines.append(f"| **生成输出 (`Output Tokens`)** | `{td.get('output_tokens', 0):,}` (`{td.get('output_tokens', 0)/10000:.2f} 万`) | `{at.get('output_tokens', 0):,}` |")
+        lines.append(f"| **思考推理 (`Thinking Tokens`)** | `{td.get('thinking_tokens', 0):,}` (`{td.get('thinking_tokens', 0)/10000:.2f} 万`) | `{at.get('thinking_tokens', 0):,}` |")
+        lines.append(f"| **提示词缓存命中率 (`Cache Hit Rate`)** | **`{td.get('cache_hit_rate', 0):.2f}%`** | **`{at.get('cache_hit_rate', 0):.2f}%`** |")
+        lines.append("")
+
+        if td.get("by_routed_model"):
+            lines.append("### 今日按实际后端路由模型拆分明细")
+            lines.append("| 实际后端路由模型 (`routed_model`) | 今日轮次 | 今日总 Token | 新鲜输入 (`Input`) | 缓存命中 (`Cached`) | 生成输出 (`Output`) | 思考推理 (`Thinking`) |")
+            lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
+            for rm_name, rm_val in td["by_routed_model"].items():
+                lines.append(
+                    f"| `{rm_name}` | {rm_val['turns']} | `{rm_val['total']:,}` | `{rm_val['input']:,}` | `{rm_val['cached']:,}` | `{rm_val['output']:,}` | `{rm_val['thinking']:,}` |"
+                )
+            lines.append("")
 
     # 5. 本机历史数据库观测到的所有真实后端路由模型汇总
     obs = ta.get("observed_backend_routes", {})
@@ -933,8 +1209,22 @@ def render_markdown_report(report: dict) -> str:
 
 
 if __name__ == "__main__":
-    report_data = build_full_report()
-    if "--markdown" in sys.argv or "-m" in sys.argv:
+    parser = argparse.ArgumentParser(description="Antigravity 运行时状态与配额观测工具")
+    parser.add_argument("-m", "--markdown", action="store_true", help="以 Markdown 格式输出美化报告")
+    parser.add_argument("--json", action="store_true", help="以 JSON 格式输出完整原始数据")
+    parser.add_argument("--live-only", action="store_true", help="仅探测 RPC 配额与连接状态，跳过本地 SQLite 历史分析")
+    parser.add_argument("--all-history", action="store_true", help="扫描全量历史会话数据库（默认仅扫描最近 3 个活跃会话）")
+    parser.add_argument("--recent-dbs", type=int, default=3, help="扫描最近更新的数据库数量（默认 3）")
+    parser.add_argument("--no-cache", action="store_true", help="强制不使用 RPC/DB 缓存")
+    args = parser.parse_args()
+
+    report_data = build_full_report(
+        recent_dbs=args.recent_dbs,
+        all_history=args.all_history,
+        live_only=args.live_only,
+        use_cache=not args.no_cache,
+    )
+    if args.markdown:
         print(render_markdown_report(report_data))
     else:
         print(json.dumps(report_data, ensure_ascii=False, indent=2))

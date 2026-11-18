@@ -183,47 +183,135 @@ def select_tool(page, tool_name: str) -> None:
 
 
 def wait_response_complete(page, latest_resp, deadline: float) -> None:
-    """等待流式输出完全结束。"""
-    stop_selector = 'button[aria-label*="停止"], button[aria-label*="Stop" i]'
-    mic_selector = 'button[aria-label*="语音输入"], button[aria-label*="Microphone" i]'
-    done_selector = 'button[aria-label="复制"], button[aria-label="Copy"], button[aria-label="答得好"]'
+    """等待流式输出完全结束（包含 500ms 文本静止防抖与 15s 静默兜底）。"""
+    last_text = ""
+    last_change_time = time.time()
+
     while time.time() < deadline:
-        stop_visible = page.locator(stop_selector).count() > 0 and page.locator(stop_selector).first.is_visible()
-        mic_visible = page.locator(mic_selector).count() > 0 and page.locator(mic_selector).first.is_visible()
-        container = latest_resp.locator("xpath=ancestor::*[contains(@class,'conversation-container')][1]")
-        done_visible = (container.locator(done_selector).count() > 0) if container.count() > 0 else (latest_resp.locator(done_selector).count() > 0)
-        if (not stop_visible) and (mic_visible or done_visible):
-            page.wait_for_timeout(300)
-            return
+        try:
+            res = page.evaluate(DOM_STATUS_EVAL_JS)
+            running = res.get("running", False)
+            text = res.get("text") or res.get("answer") or ""
+
+            if text != last_text:
+                last_text = text
+                last_change_time = time.time()
+
+            # 路径 A：正向判定非 running，且文本已有并稳定超过 500ms
+            if not running and text:
+                page.wait_for_timeout(500)
+                confirm_res = page.evaluate(DOM_STATUS_EVAL_JS)
+                if not confirm_res.get("running", False) and (confirm_res.get("text") or "") == text:
+                    return
+
+            # 路径 B：15s 静止且底部工具栏出现兜底
+            if running and text and res.get("hasActionToolbar"):
+                if (time.time() - last_change_time) >= 15.0:
+                    return
+        except Exception:
+            pass
+
         page.wait_for_timeout(500)
     raise TimeoutError("等待 Gemini 网页端生成完成超时。")
 
 
+DOM_STATUS_EVAL_JS = r"""(() => {
+    const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') === 0)) {
+            return false;
+        }
+        return el.offsetParent !== null || (el.getClientRects && el.getClientRects().length > 0);
+    };
+
+    const findVisible = (selector) => {
+        if (typeof document.querySelectorAll === 'function') {
+            const list = document.querySelectorAll(selector);
+            for (const el of list) {
+                if (isVisible(el)) return el;
+            }
+            return null;
+        }
+        const single = document.querySelector(selector);
+        return isVisible(single) ? single : null;
+    };
+
+    // 1. 显式停止按钮检测（正向运行证据：可见即判定 running）
+    const stopBtn = findVisible(
+        'button[aria-label*="Stop" i], button[aria-label*="停止"], ' +
+        '.stop-button, button.stop, [data-test-id="stop-button"], ' +
+        'ms-run-button button[aria-label*="Stop" i]'
+    );
+
+    // 2. 显式流式生成指示器检测
+    const streamingIndicator = findVisible(
+        'model-response[is-streaming="true"], .streaming-indicator, ' +
+        'mat-progress-bar[mode="indeterminate"], .loading-indicator'
+    );
+
+    // 3. 显式空闲/就绪特征
+    const sendBtn = findVisible(
+        'button[aria-label*="Send" i], button[aria-label*="发送"], ' +
+        'button[aria-label*="Run" i], .send-button'
+    );
+    const micBtn = findVisible(
+        'button[aria-label*="Microphone" i], button[aria-label*="语音输入"], button[aria-label*="麦克风"], .speech_dictation_mic_button'
+    );
+
+    // 4. 回复底部操作工具栏
+    const actionToolbar = findVisible(
+        'message-actions, .response-footer, [data-test-id="copy-button"], ' +
+        'button[aria-label*="Copy" i], button[aria-label*="复制"], ' +
+        'button[aria-label*="Good response" i], button[aria-label*="赞"]'
+    );
+
+    const resps = document.querySelectorAll('model-response');
+    const last = resps[resps.length - 1];
+    const waitingBanner = last?.querySelector('spark-waiting-for-user-banner')?.innerText?.trim() || '';
+    const goalFooter = last?.querySelector('remy-goal-status-footer')?.innerText?.trim() || '';
+    const steps = Array.from(last?.querySelectorAll('spark-thinking-steps') || []).map(s => s.innerText.trim());
+    const mc = last?.querySelector('message-content');
+    const imgs = Array.from(last?.querySelectorAll('img') || []).map(i => i.src).filter(s => s && !s.startsWith('data:image/svg'));
+
+    let responseText = '';
+    const candidates = document.querySelectorAll(
+        'model-response .markdown, model-response message-content, ' +
+        '.model-response-text, ms-chat-turn[data-role="model"] .turn-content, ' +
+        '[data-message-author-role="model"]'
+    );
+    if (candidates.length > 0) {
+        const lastEl = candidates[candidates.length - 1];
+        responseText = (lastEl.innerText || lastEl.textContent || '').trim();
+    } else if (mc) {
+        responseText = (mc.innerText || mc.textContent || '').trim();
+    }
+
+    const hasStopBtn = Boolean(stopBtn);
+    const hasStreamingIndicator = Boolean(streamingIndicator);
+    const isRunning = hasStopBtn || hasStreamingIndicator;
+
+    return {
+        url: location.href,
+        model: document.querySelector('button[data-test-id="bard-mode-menu-button"]')?.innerText?.trim() || '',
+        running: isRunning,
+        hasStopBtn: hasStopBtn,
+        hasStreamingIndicator: hasStreamingIndicator,
+        hasActionToolbar: Boolean(actionToolbar),
+        isIdleUI: !isRunning && (Boolean(sendBtn) || Boolean(micBtn)),
+        goal_status: goalFooter,
+        waiting_for_user: waitingBanner,
+        steps: steps,
+        images: imgs,
+        answer: responseText,
+        text: responseText,
+    };
+})()"""
+
+
 def extract_latest_result(page) -> dict:
     """读取当前标签页最新一条回答的状态、步骤、是否需要用户确认及正文。"""
-    return page.evaluate(
-        """() => {
-        const resps = document.querySelectorAll('model-response');
-        const last = resps[resps.length - 1];
-        const stopBtn = document.querySelector('button[aria-label*="停止"], button[aria-label*="Stop" i]');
-        const micBtn = document.querySelector('button[aria-label*="语音输入"], button[aria-label*="Microphone" i]');
-        const waitingBanner = last?.querySelector('spark-waiting-for-user-banner')?.innerText?.trim() || '';
-        const goalFooter = last?.querySelector('remy-goal-status-footer')?.innerText?.trim() || '';
-        const steps = Array.from(last?.querySelectorAll('spark-thinking-steps') || []).map(s => s.innerText.trim());
-        const mc = last?.querySelector('message-content');
-        const imgs = Array.from(last?.querySelectorAll('img') || []).map(i => i.src).filter(s => s && !s.startsWith('data:image/svg'));
-        return {
-            url: location.href,
-            model: document.querySelector('button[data-test-id="bard-mode-menu-button"]')?.innerText?.trim() || '',
-            running: !!(stopBtn && stopBtn.offsetParent !== null) || !(micBtn && micBtn.offsetParent !== null),
-            goal_status: goalFooter,
-            waiting_for_user: waitingBanner,
-            steps,
-            images: imgs,
-            answer: (mc?.innerText || '').trim()
-        };
-    }"""
-    )
+    return page.evaluate(DOM_STATUS_EVAL_JS)
 
 
 def execute_ask(
@@ -1519,11 +1607,16 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
         threading.Thread(target=server.serve_forever, daemon=True).start()
         print(f"[daemon] 已就绪，监听 http://{DAEMON_HOST}:{bind_port}", flush=True)
 
+        last_active = time.time()
         while True:
             try:
                 path, body, done, box = task_q.get(timeout=1.0)
+                last_active = time.time()
             except queue.Empty:
                 if not browser.is_connected():
+                    break
+                if (time.time() - last_active) > 600:
+                    print("[daemon] 空闲超过 10 分钟，自动退出释放资源", flush=True)
                     break
                 continue
             try:
@@ -1614,13 +1707,13 @@ def call_daemon(path: str, payload: dict, bind_port: int = DAEMON_PORT) -> dict 
 
 
 def _exec_cdp(port: int | None, path: str, payload: dict, local_fn) -> dict:
-    """优先转发给本地常驻 daemon；未运行则直连 CDP 执行。"""
+    """优先转发给本地常驻 daemon；未运行则直连 CDP 执行（超时 5000ms 快速失败）。"""
     res = call_daemon(path, payload)
     if res is not None:
         return res
     ws_url = get_cdp_ws_url(port)
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(ws_url, timeout=30000)
+        browser = p.chromium.connect_over_cdp(ws_url, timeout=5000)
         return local_fn(browser)
 
 
@@ -1766,7 +1859,7 @@ def main() -> None:
             else:
                 ws_url = get_cdp_ws_url(args.port)
                 with sync_playwright() as p:
-                    browser = p.chromium.connect_over_cdp(ws_url, timeout=30000)
+                    browser = p.chromium.connect_over_cdp(ws_url, timeout=5000)
                     res = execute_usage(browser)
                     res["flow"] = execute_flow_usage(browser)
         else:
