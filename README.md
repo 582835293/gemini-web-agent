@@ -62,11 +62,14 @@ python scripts/setup_skill.py --update
 gemini-web-agent/
 ├── SKILL.md                  # Agent 技能核心定义与自动部署/三站点调度规范
 ├── references/
-│   └── agentlimb.md          # AgentLimb MCP 日常调用要点备忘
+│   ├── agentlimb.md          # AgentLimb MCP 日常备忘、防冻结落盘与参考图连招
+│   └── models.md             # AI Studio & Google Flow 全分类模型速查表
 ├── scripts/
 │   ├── setup_skill.py        # AI 一键自动安装、建 .venv 与通道自检脚本
-│   ├── gemini_web.py         # Playwright CDP 备用全功能 CLI 脚本
+│   ├── gemini_web.py         # Playwright CDP 备用全功能 CLI + 下载归档工具
 │   └── inspect_antigravity.py # 内置 Antigravity 本地双轨配额、后端路由与 Token 消耗检测脚本
+├── tests/
+│   └── test_core.py          # 纯标准库离线冒烟测试（模型解析/行协议/harvest/版本缓存）
 ├── requirements.txt          # Python 依赖（playwright）
 └── README.md
 ```
@@ -91,7 +94,7 @@ git clone https://github.com/582835293/gemini-web-agent.git "$env:USERPROFILE\.g
 git clone https://github.com/582835293/gemini-web-agent.git ~/.gemini/config/skills/gemini-web-agent
 ```
 
-### 2. 配置依赖（用于通道 B 备用 CLI 与切图脚本）
+### 2. 配置依赖（用于通道 B 备用 CLI）
 
 ```powershell
 cd "$env:USERPROFILE\.gemini\config\skills\gemini-web-agent"
@@ -129,11 +132,12 @@ python .\scripts\inspect_antigravity.py   # 仅 Antigravity 环境按需对比�
 & $py $cli playground --model lyria --prompt "inspiring synthwave background music, 118bpm" --download-dir "./out"
 & $py $cli playground --model tts --prompt "欢迎使用 Gemini Web-Agent 调度三端免费额度！" --download-dir "./out"
 
-# 4. 仅挂载本地文件到已打开标签页 + Gemini 高优异步 Task + AI Studio Build 整套工程导出（默认 MAX + Argon）
+# 4. 仅挂载本地文件到已打开标签页 + Gemini 高优异步 Task（默认已切为 task）+ Build + 零上下文归档
 & $py $cli attach --site aistudio --file "./补充资料.txt"
-& $py $cli ask --entry task --model hydrogen --file "./需求说明.pdf" --prompt "异步调研/轻量原型任务..." --async-send
-& $py $cli fetch --raw
+& $py $cli ask --model hydrogen --file "./需求说明.pdf" --prompt "异步调研/轻量原型任务..." --async-send
+& $py $cli fetch --out-file "./result.md"
 & $py $cli build --mode max --model argon --framework React --prompt "一整套完整全栈/多页应用需求" --download-dir "./out" --extract
+& $py $cli harvest --pattern "bundle*.json" --unpack-json --dest "./out"
 ```
 
 ---

@@ -10,7 +10,7 @@ gemini-web-agent 一键自动配置与环境自检脚本（Zero-Touch Setup for 
     1. 自动识别并同步 Skill 到全局技能目录（默认优先 ~/.gemini/config/skills/gemini-web-agent）；
     2. 自动创建 .venv 并安装 requirements.txt（playwright，无需下载 Chromium 浏览器内核）；
     3. 自动检测双通道状态（通道 A: AgentLimb MCP 配置；通道 B: 外部 Chrome CDP DevToolsActivePort）；
-    4. 输出结构化 JSON 诊断报告，方便拉取者电脑上的 AI 直接接管并开始调度三端额度。
+    4. 默认输出极简 1 行状态摘要（加 --json 可看完整结构），方便任意客户端 AI 直接接管调度。
 """
 
 import argparse
@@ -576,7 +576,8 @@ def main() -> None:
         deps_tag = "ok" if venv_info["dependencies_ready"] else "missing"
         print(
             f"ok={str(venv_info['dependencies_ready']).lower()} | commit={version_meta.get('installed_commit') or '-'} "
-            f"| A={a_tag} | B={b_tag} | deps={deps_tag} | py={venv_info['venv_python']} | cli={target_dir / 'scripts' / 'gemini_web.py'}"
+            f"| A={a_tag} | B={b_tag} | deps={deps_tag} | py={venv_info['venv_python']} "
+            f"| cli={target_dir / 'scripts' / 'gemini_web.py'} | inspect={target_dir / 'scripts' / 'inspect_antigravity.py'}"
         )
         if not agentlimb_info["configured"] or not venv_info["dependencies_ready"]:
             for rule in safety_rules:

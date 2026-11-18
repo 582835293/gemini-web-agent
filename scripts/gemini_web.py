@@ -7,11 +7,14 @@
 
 import argparse
 import base64
+import fnmatch
 import http.server
 import json
 import os
+import platform
 import queue
 import re
+import shutil
 import socketserver
 import sys
 import threading
@@ -153,15 +156,40 @@ MODEL_OPTIONS = {
 }
 
 
+def _iter_devtools_active_port_files() -> list[Path]:
+    """返回当前平台可能存在 Chrome DevToolsActivePort 的路径列表。"""
+    home = Path.home()
+    sys_name = platform.system().lower()
+    if sys_name.startswith("win"):
+        local_app = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
+        return [
+            local_app / "Google" / "Chrome" / "User Data" / "DevToolsActivePort",
+            local_app / "Google" / "Chrome Beta" / "User Data" / "DevToolsActivePort",
+            local_app / "Microsoft" / "Edge" / "User Data" / "DevToolsActivePort",
+        ]
+    if sys_name == "darwin":
+        support = home / "Library" / "Application Support"
+        return [
+            support / "Google" / "Chrome" / "DevToolsActivePort",
+            support / "Google" / "Chrome Beta" / "DevToolsActivePort",
+            support / "Microsoft Edge" / "DevToolsActivePort",
+        ]
+    cfg = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
+    return [
+        cfg / "google-chrome" / "DevToolsActivePort",
+        cfg / "chromium" / "DevToolsActivePort",
+        cfg / "microsoft-edge" / "DevToolsActivePort",
+    ]
+
+
 def get_cdp_ws_url(port_override: int | None = None) -> str:
-    """从 Chrome User Data 的 DevToolsActivePort 读取 WebSocket CDP 地址。"""
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
-    active_port_file = Path(local_app_data) / "Google" / "Chrome" / "User Data" / "DevToolsActivePort"
-    if active_port_file.exists():
-        lines = [line.strip() for line in active_port_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if len(lines) >= 2:
-            port = port_override or int(lines[0])
-            return f"ws://127.0.0.1:{port}{lines[1]}"
+    """跨平台从 Chrome User Data 的 DevToolsActivePort 读取 WebSocket CDP 地址。"""
+    for active_port_file in _iter_devtools_active_port_files():
+        if active_port_file.exists():
+            lines = [line.strip() for line in active_port_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if len(lines) >= 2:
+                port = port_override or int(lines[0])
+                return f"ws://127.0.0.1:{port}{lines[1]}"
     if port_override:
         return f"http://127.0.0.1:{port_override}"
     raise RuntimeError("未找到 DevToolsActivePort，请先在 Chrome 开启远程调试或使用 AgentLimb MCP。")
@@ -247,12 +275,14 @@ def _gemini_attach_files(page, file_paths: list[str]) -> list[str]:
 
 
 def select_entry_mode(page, entry: str) -> None:
-    """在新对话页切换「对话」或「任务」模式。"""
-    label = "任务" if entry.strip().lower() == "task" else "对话"
-    btn = page.locator(f'gem-segmented-button button:has-text("{label}")').first
-    if btn.count() > 0 and btn.is_visible():
-        btn.click()
-        page.wait_for_timeout(400)
+    """在新对话页切换「对话/Chat」或「任务/Task」模式。"""
+    labels = ("任务", "Task") if entry.strip().lower() == "task" else ("对话", "Chat")
+    for label in labels:
+        btn = page.locator(f'gem-segmented-button button:has-text("{label}")').first
+        if btn.count() > 0 and btn.is_visible():
+            btn.click()
+            page.wait_for_timeout(400)
+            return
 
 
 def select_model(page, model_key: str) -> str:
@@ -358,6 +388,11 @@ def extract_latest_result(page) -> dict:
         const last = resps[resps.length - 1];
         const stopBtn = document.querySelector('button[aria-label*="停止"], button[aria-label*="Stop" i]');
         const micBtn = document.querySelector('button[aria-label*="语音输入"], button[aria-label*="Microphone" i]');
+        const container = last?.closest('.conversation-container') || last;
+        const doneBtn = container?.querySelector('button[aria-label="复制"], button[aria-label="Copy"], button[aria-label="答得好"]');
+        const stopVisible = !!(stopBtn && stopBtn.offsetParent !== null);
+        const micVisible = !!(micBtn && micBtn.offsetParent !== null);
+        const doneVisible = !!(doneBtn && doneBtn.offsetParent !== null);
         const waitingBanner = last?.querySelector('spark-waiting-for-user-banner')?.innerText?.trim() || '';
         const goalFooter = last?.querySelector('remy-goal-status-footer')?.innerText?.trim() || '';
         const steps = Array.from(last?.querySelectorAll('spark-thinking-steps') || []).map(s => s.innerText.trim());
@@ -366,7 +401,7 @@ def extract_latest_result(page) -> dict:
         return {
             url: location.href,
             model: document.querySelector('button[data-test-id="bard-mode-menu-button"]')?.innerText?.trim() || '',
-            running: !!(stopBtn && stopBtn.offsetParent !== null) || !(micBtn && micBtn.offsetParent !== null),
+            running: stopVisible || (!micVisible && !doneVisible),
             goal_status: goalFooter,
             waiting_for_user: waitingBanner,
             steps,
@@ -377,11 +412,19 @@ def extract_latest_result(page) -> dict:
     )
 
 
+def _resolve_ask_entry(entry: str, tool: str | None = None, thinking: str | None = None) -> str:
+    """解析 gemini.google.com 入口：未显式指定时，带工具/思考参数自动走 chat，其余默认走高优 task 模式。"""
+    cleaned = (entry or "").strip().lower()
+    if cleaned in ("chat", "task"):
+        return cleaned
+    return "chat" if (tool or thinking) else "task"
+
+
 def execute_ask(
     browser,
     prompt: str,
-    entry: str = "chat",
-    model: str = "hydrogen",
+    entry: str = "",
+    model: str = "",
     tool: str | None = None,
     thinking: str | None = None,
     new_tab: bool = True,
@@ -390,23 +433,30 @@ def execute_ask(
     timeout_sec: int = 180,
     files: list[str] | None = None,
 ) -> dict:
-    """在外部 Chrome 的 Gemini 网页中执行提问（支持无弹窗附件上传、异步发射与会话复用）。"""
+    """在外部 Chrome 的 Gemini 网页中执行提问或异步任务（默认 Task 模式，支持无弹窗附件上传与会话复用）。"""
     t0 = time.time()
     file_paths = _validate_files(files)
     page = get_gemini_page(browser, new_tab=new_tab, tab_url_hint=tab_url_hint)
 
-    if new_tab and not tab_url_hint and not re.search(r"gemini\.google\.com/app/[^/?#]+", page.url or ""):
-        select_entry_mode(page, entry)
+    before_count = page.locator("model-response").count()
+    is_fresh_chat = before_count == 0 and not re.search(r"gemini\.google\.com/app/[^/?#]+", page.url or "")
+    effective_entry = _resolve_ask_entry(entry, tool=tool, thinking=thinking)
+    if is_fresh_chat:
+        select_entry_mode(page, effective_entry)
 
-    active_model = select_model(page, model) if model else ""
-    if thinking and entry.lower() != "task":
+    chosen_model = model or ("hydrogen" if is_fresh_chat else "")
+    if chosen_model:
+        active_model = select_model(page, chosen_model)
+    else:
+        mode_btn = page.locator('button[data-test-id="bard-mode-menu-button"]').first
+        active_model = (mode_btn.inner_text() or "").strip() if mode_btn.count() > 0 else ""
+
+    if thinking and effective_entry != "task":
         select_thinking_level(page, thinking)
-    if tool and entry.lower() != "task":
+    if tool and effective_entry != "task":
         select_tool(page, tool)
 
     attached_files = _gemini_attach_files(page, file_paths) if file_paths else []
-
-    before_count = page.locator("model-response").count()
 
     textbox = page.locator('div[role="textbox"]').first
     textbox.click()
@@ -429,7 +479,7 @@ def execute_ask(
         _save_last_session("gemini", page.url)
         return {
             "status": "dispatched",
-            "entry": entry,
+            "entry": effective_entry,
             "model": active_model,
             "url": page.url,
             "attached_files": attached_files,
@@ -848,13 +898,27 @@ def _aistudio_playground_is_running(page) -> bool:
     )
 
 
-def _aistudio_has_final_output(page) -> bool:
+def _is_media_playground_model(model_name_or_id: str) -> bool:
+    """判断是否为生图/生视频/音乐/TTS等无需 Thinking Level 与 1M 输出参数的媒体模型。"""
+    s = (model_name_or_id or "").strip().lower()
+    return any(tok in s for tok in ("nano", "image", "omni", "veo", "lyria", "tts", "transcribe", "live"))
+
+
+def _aistudio_has_final_output(page, min_turns: int = 0) -> bool:
     return bool(
         page.evaluate(
-            """() => {
+            """(minTurns) => {
+                const allTurns = Array.from(document.querySelectorAll('ms-chat-turn'));
+                if (minTurns > 0 && allTurns.length <= minTurns) return false;
                 const modelTurns = Array.from(document.querySelectorAll('[data-turn-role="Model"]'));
                 const last = modelTurns[modelTurns.length - 1];
                 if (!last) return false;
+                if (allTurns.length > 0) {
+                    const lastTurn = allTurns[allTurns.length - 1];
+                    if (!lastTurn.querySelector('[data-turn-role="Model"]') && !lastTurn.matches('[data-turn-role="Model"]')) {
+                        if (lastTurn !== last && !lastTurn.contains(last)) return false;
+                    }
+                }
                 const thoughtEls = Array.from(last.querySelectorAll('ms-thought-chunk, mat-expansion-panel'));
                 const thoughtSet = new Set(thoughtEls);
                 const finalCmarks = Array.from(last.querySelectorAll('ms-cmark-node')).filter(
@@ -862,7 +926,8 @@ def _aistudio_has_final_output(page) -> bool:
                 );
                 const hasMedia = last.querySelectorAll('img[src^="blob:"], video[src^="blob:"]').length > 0;
                 return finalCmarks.length > 0 || hasMedia;
-            }"""
+            }""",
+            min_turns,
         )
     )
 
@@ -928,7 +993,7 @@ def _aistudio_extract_playground_result(page, download_dir: str = "") -> dict:
             const thoughtSet = new Set(thoughtEls);
             const thoughts = thoughtEls.map(el => (el.innerText || '').trim()).filter(Boolean).join('\\n\\n');
             const cmarkNodes = Array.from(last.querySelectorAll('ms-cmark-node')).filter(
-                n => !Array.from(thoughtSet).some(t => t.contains(n))
+                n => !Array.from(thoughtSet).some(t => t.contains(n)) && !(n.parentElement && n.parentElement.closest('ms-cmark-node'))
             );
             let text = '';
             if (cmarkNodes.length) {
@@ -1101,7 +1166,7 @@ def _aistudio_run_tts(
 def execute_playground(
     browser,
     prompt: str,
-    model: str = "hydrogen",
+    model: str = "",
     system_instruction: str = "",
     system_file: str = "",
     files: list[str] | None = None,
@@ -1118,7 +1183,9 @@ def execute_playground(
     t0 = time.time()
     file_paths = _validate_files(files)
     sys_text = _read_system_text(system_instruction, system_file)
-    model_id = _resolve_aistudio_model_id(model) if model else ""
+    explicit_model = (model or "").strip()
+    nav_model = explicit_model or "hydrogen"
+    model_id = _resolve_aistudio_model_id(nav_model)
     target_url = (
         f"https://aistudio.google.com/prompts/new_chat?model={model_id}"
         if model_id
@@ -1147,24 +1214,29 @@ def execute_playground(
 
     cur_url = page.url or ""
     if "/new_music" in cur_url or model_id.startswith("lyria"):
-        return _aistudio_run_music(page, prompt, model_id or model, download_dir, async_send, timeout_sec, t0)
+        return _aistudio_run_music(page, prompt, model_id or nav_model, download_dir, async_send, timeout_sec, t0)
     if "/generate-speech" in cur_url or "tts" in model_id:
-        return _aistudio_run_tts(page, prompt, model_id or model, download_dir, async_send, timeout_sec, t0)
+        return _aistudio_run_tts(page, prompt, model_id or nav_model, download_dir, async_send, timeout_sec, t0)
 
-    if model and (not new_tab or not model_id or (model_id not in cur_url)):
-        active_model = _short_model_name(_aistudio_select_playground_model(page, model))
+    before_turns = page.locator("ms-chat-turn").count()
+    is_fresh_session = before_turns == 0 and "/new_chat" in cur_url
+    need_model_pick = explicit_model or ("hydrogen" if is_fresh_session else "")
+    if need_model_pick and (not new_tab or not model_id or (model_id not in cur_url)):
+        active_model = _short_model_name(_aistudio_select_playground_model(page, need_model_pick))
     else:
         card = page.locator(".model-selector-card").first
-        active_model = _short_model_name((card.inner_text() or "") if card.count() > 0 else (model_id or model))
+        active_model = _short_model_name((card.inner_text() or "") if card.count() > 0 else (model_id or nav_model))
 
     if sys_text:
         _aistudio_set_system_instruction(page, sys_text)
 
-    tuned = _aistudio_tune_playground_max(page, thinking_level=thinking_level, max_output=max_output)
+    if _is_media_playground_model(active_model or model_id):
+        tuned = {}
+    else:
+        tuned = _aistudio_tune_playground_max(page, thinking_level=thinking_level, max_output=max_output)
 
     attached_files = _aistudio_attach_files(page, file_paths) if file_paths else []
 
-    before_turns = page.locator("ms-chat-turn").count()
     prompt_box = page.locator('textarea[aria-label="Enter a prompt"]').first
     prompt_box.wait_for(state="visible", timeout=15000)
     prompt_box.click()
@@ -1198,7 +1270,7 @@ def execute_playground(
         announcer_txt = (announcer.first.inner_text() or "") if announcer.count() > 0 else ""
         if running or turn_count > before_turns:
             started = True
-        has_output = _aistudio_has_final_output(page)
+        has_output = _aistudio_has_final_output(page, min_turns=before_turns)
         if started and "response ready" in announcer_txt.lower() and not running and has_output:
             break
         if started and not running and has_output:
@@ -1574,7 +1646,11 @@ def execute_flow_usage(browser) -> dict:
         dialog.wait_for(state="visible", timeout=10000)
         raw = re.sub(r"\s+", " ", (dialog.inner_text() or "")).strip()
         credits_m = re.search(r"([\d,]+)\s*(?:个\s*Google Flow\s*点数|Google Flow\s*credits?)", raw, re.IGNORECASE)
-        reset_m = re.search(r"(?:重置时间[:：]\s*|Resets?\s+)([^\n]+?)(?:\s+升级|\s+person|\s+Upgrade|$)", raw, re.IGNORECASE)
+        reset_m = re.search(
+            r"(?:重置时间[:：]\s*|Resets?\s+)([^\n]+?)(?=\s+(?:升级|person|Upgrade|退出|Sign\s*out|frame_spark|可见水印|隐私权|Privacy)|$)",
+            raw,
+            re.IGNORECASE,
+        )
         return {
             "status": "ok",
             "url": page.url,
@@ -1936,8 +2012,8 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
                     box["result"] = execute_ask(
                         browser,
                         prompt=body["prompt"],
-                        entry=body.get("entry", "chat"),
-                        model=body.get("model", "hydrogen"),
+                        entry=body.get("entry", ""),
+                        model=body.get("model", ""),
                         tool=body.get("tool"),
                         thinking=body.get("thinking"),
                         new_tab=body.get("new_tab", False),
@@ -1954,7 +2030,7 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
                     box["result"] = execute_playground(
                         browser,
                         prompt=body["prompt"],
-                        model=body.get("model", "hydrogen"),
+                        model=body.get("model", ""),
                         system_instruction=body.get("system_instruction", ""),
                         system_file=body.get("system_file", ""),
                         files=body.get("files"),
@@ -2042,6 +2118,86 @@ def _exec_cdp(port: int | None, path: str, payload: dict, local_fn) -> dict:
         return local_fn(browser)
 
 
+def _default_downloads_dir() -> Path:
+    """跨平台定位用户默认下载目录。"""
+    return Path.home() / "Downloads"
+
+
+def _safe_rel_dest(base_dir: Path, rel_path: str) -> Path:
+    """防止解包 JSON 时发生路径穿越。"""
+    cleaned = rel_path.replace("\\", "/").lstrip("/")
+    target = (base_dir / cleaned).resolve()
+    base_resolved = base_dir.resolve()
+    if target != base_resolved and base_resolved not in target.parents:
+        raise ValueError(f"非法解包目标路径（禁止越出目标目录）: {rel_path}")
+    return target
+
+
+def execute_harvest(
+    pattern: str = "*",
+    dest: str = ".",
+    src_dir: str = "",
+    since_min: float = 30.0,
+    unpack_json: bool = False,
+    copy_only: bool = False,
+) -> dict:
+    """免本地 AI 上下文直接收割 Chrome 下载目录中的网页产物到工程目录，支持单个 JSON Blob 包拆包。"""
+    t0 = time.time()
+    src = Path(src_dir).expanduser().resolve() if src_dir else _default_downloads_dir().resolve()
+    if not src.is_dir():
+        raise FileNotFoundError(f"下载源目录不存在: {src}")
+    dst = Path(dest).expanduser().resolve()
+    dst.mkdir(parents=True, exist_ok=True)
+
+    patterns = [p.strip() for p in (pattern or "*").split(",") if p.strip()] or ["*"]
+    cutoff = time.time() - max(0.0, since_min) * 60.0 if since_min > 0 else 0.0
+
+    matched: list[Path] = []
+    for entry in sorted(src.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0):
+        if not entry.is_file():
+            continue
+        if entry.name.endswith((".crdownload", ".tmp", ".part")):
+            continue
+        if cutoff and entry.stat().st_mtime < cutoff:
+            continue
+        if any(fnmatch.fnmatch(entry.name.lower(), pat.lower()) for pat in patterns):
+            matched.append(entry)
+
+    saved_files: list[str] = []
+    unpacked_files: list[str] = []
+    for src_file in matched:
+        if unpack_json and src_file.suffix.lower() == ".json":
+            bundle = json.loads(src_file.read_text(encoding="utf-8"))
+            if not isinstance(bundle, dict):
+                raise ValueError(f"JSON 包顶层必须为 {{相对路径: 内容}} 对象: {src_file.name}")
+            for rel_name, content in bundle.items():
+                out_path = _safe_rel_dest(dst, str(rel_name))
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                text_val = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, indent=2)
+                out_path.write_text(text_val, encoding="utf-8")
+                unpacked_files.append(str(out_path))
+            if not copy_only:
+                src_file.unlink()
+        else:
+            target_file = dst / src_file.name
+            if copy_only:
+                shutil.copy2(src_file, target_file)
+            else:
+                shutil.move(str(src_file), str(target_file))
+            saved_files.append(str(target_file))
+
+    all_out = unpacked_files + saved_files
+    return {
+        "status": "ok" if all_out else "empty",
+        "entry": "harvest",
+        "src_dir": str(src),
+        "dest_dir": str(dst),
+        "matched_count": len(matched),
+        "saved_files": all_out,
+        "elapsed_sec": round(time.time() - t0, 2),
+    }
+
+
 def _print_result(
     res: dict,
     raw: bool = False,
@@ -2071,6 +2227,10 @@ def _print_result(
         meta_parts.append(f"max_out={rs['max_output_tokens']}")
     if res.get("saved_text_file"):
         meta_parts.append(f"out={res['saved_text_file']}({res.get('text_chars', 0)}c)")
+    if res.get("dest_dir"):
+        meta_parts.append(f"dest={res['dest_dir']}")
+    if res.get("matched_count") is not None:
+        meta_parts.append(f"matched={res['matched_count']}")
     if res.get("saved_files"):
         meta_parts.append(f"files={','.join(str(x) for x in res['saved_files'])}")
     if res.get("attached_files"):
@@ -2103,10 +2263,10 @@ def main() -> None:
     p_daemon = sub.add_parser("daemon", help="启动常驻 CDP 桥接服务")
     p_daemon.add_argument("--port", type=int, default=None)
 
-    p_ask = sub.add_parser("ask", help="在 gemini.google.com 发起对话或异步任务")
+    p_ask = sub.add_parser("ask", help="在 gemini.google.com 发起异步任务或对话（默认 task 模式）")
     p_ask.add_argument("--prompt", "-p", required=True, help="提问或任务描述")
-    p_ask.add_argument("--entry", choices=["chat", "task"], default="chat", help="入口: chat(对话) | task(异步任务)")
-    p_ask.add_argument("--model", "-m", default="hydrogen", help="模型: flash-lite | hydrogen | pro | argon | carbon")
+    p_ask.add_argument("--entry", choices=["", "chat", "task"], default="", help="入口: task(默认) | chat(对话；传 --tool/--thinking 时自动切 chat)")
+    p_ask.add_argument("--model", "-m", default="", help="模型: hydrogen(新会话默认) | argon | pro | flash-lite（复用会话不传则保持原模型）")
     p_ask.add_argument("--tool", "-t", default=None, help="对话模式工具: Deep Research | Canvas | 制作图片 | 制作视频 | 制作音乐")
     p_ask.add_argument("--thinking", default=None, help="思考等级: 低 | 中 | 高")
     p_ask.add_argument("--file", dest="files", action="append", default=[], help="无弹窗上传本地附件（可多次传入）")
@@ -2137,8 +2297,8 @@ def main() -> None:
     p_pg.add_argument(
         "--model",
         "-m",
-        default="hydrogen",
-        help="模型别名或ID: hydrogen | argon | flash | decision | nano2.1 | nano-pro | omni1.2 | lyria | tts | research | gemma-31b 等",
+        default="",
+        help="模型别名或ID: hydrogen(新会话默认) | argon | nano2.1 | omni1.2 | lyria | tts | research 等（复用不传则保持原模型）",
     )
     p_pg.add_argument("--system", default="", help="系统指令 (System Instructions)")
     p_pg.add_argument("--system-file", default="", help="从本地文件读取文本并写入 System Instructions（如世界观设定 .md/.txt）")
@@ -2196,10 +2356,31 @@ def main() -> None:
     _add_json_flag(p_flow)
     p_flow.add_argument("--port", type=int, default=None)
 
+    p_harvest = sub.add_parser("harvest", help="从 Chrome 下载目录收割网页导出文件并可选解包 JSON Blob 到目标目录")
+    p_harvest.add_argument("--pattern", default="*", help="匹配文件名通配符（逗号分隔，如 *.png,*.mp3 或 bundle-*.json）")
+    p_harvest.add_argument("--dest", "-d", default=".", help="归档或解包目标目录（默认当前目录）")
+    p_harvest.add_argument("--src-dir", default="", help="指定下载源目录（默认自动定位 ~/Downloads）")
+    p_harvest.add_argument("--since-min", type=float, default=30.0, help="仅收割最近 N 分钟内的文件（0 表示不限时间，默认 30）")
+    p_harvest.add_argument("--unpack-json", action="store_true", help="将匹配的 JSON 包按 {相对路径: 内容} 解包到 --dest")
+    p_harvest.add_argument("--copy", dest="copy_only", action="store_true", help="仅复制而不移动/删除源下载文件")
+    _add_json_flag(p_harvest)
+
     args = parser.parse_args()
 
     if args.cmd == "daemon":
         run_daemon(port_override=args.port)
+        return
+
+    if args.cmd == "harvest":
+        res = execute_harvest(
+            pattern=args.pattern,
+            dest=args.dest,
+            src_dir=args.src_dir,
+            since_min=args.since_min,
+            unpack_json=args.unpack_json,
+            copy_only=args.copy_only,
+        )
+        _print_result(res, False, as_json=args.as_json)
         return
 
     if args.cmd == "ask":

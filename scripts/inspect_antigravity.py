@@ -813,7 +813,7 @@ def render_markdown_report(report: dict) -> str:
     """将完整报告渲染为无省略的结构化 Markdown"""
     lines = []
     lines.append(f"# Antigravity 全景额度、底层路由校验与 Token 监控大盘")
-    lines.append(f"> **采集时间**：`{report['generated_at']}`")
+    lines.append(f"> **采集时间**：`{report.get('generated_at', '-')}`")
     if report.get("rpc_connection"):
         rc = report["rpc_connection"]
         acc = report.get("account") or {}
