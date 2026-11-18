@@ -8,7 +8,7 @@ gemini-web-agent 一键自动配置与环境自检脚本（Zero-Touch Setup for 
   只需执行：python scripts/setup_skill.py --auto
   即可全自动完成：
     1. 自动识别并同步 Skill 到全局技能目录（默认优先 ~/.gemini/config/skills/gemini-web-agent）；
-    2. 自动创建 .venv 并安装 requirements.txt（playwright, Pillow，无需下载 Chromium 浏览器内核）；
+    2. 自动创建 .venv 并安装 requirements.txt（playwright，无需下载 Chromium 浏览器内核）；
     3. 自动检测双通道状态（通道 A: AgentLimb MCP 配置；通道 B: 外部 Chrome CDP DevToolsActivePort）；
     4. 输出结构化 JSON 诊断报告，方便拉取者电脑上的 AI 直接接管并开始调度三端额度。
 """
@@ -91,7 +91,7 @@ def venv_python_path(skill_dir: Path) -> Path:
 
 
 def ensure_venv_and_deps(skill_dir: Path, skip_pip: bool = False) -> dict:
-    """确保 .venv 存在并安装了 playwright 与 Pillow。"""
+    """确保 .venv 存在并安装了 playwright。"""
     py = venv_python_path(skill_dir)
     created_venv = False
     if not py.exists():
@@ -101,7 +101,7 @@ def ensure_venv_and_deps(skill_dir: Path, skip_pip: bool = False) -> dict:
 
     def check_imports() -> bool:
         proc = subprocess.run(
-            [str(py), "-c", "import playwright, PIL; print('DEPS_OK')"],
+            [str(py), "-c", "import playwright; print('DEPS_OK')"],
             capture_output=True,
             text=True,
         )

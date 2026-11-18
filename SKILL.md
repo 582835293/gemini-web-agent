@@ -209,4 +209,4 @@ $cli = "$skillDir\scripts\gemini_web.py"
 ```
 
 ### 4. 本地落地与验证
-把回传文本、解压后的 Build 工程或下载的 MP3 / WAV / PNG / MP4 落盘本地并验证可用；网格拼图切图用 [slice_sprites.py](scripts/slice_sprites.py)。
+把回传文本、解压后的 Build 工程或下载的 MP3 / WAV / PNG / MP4 落盘本地并验证可用。

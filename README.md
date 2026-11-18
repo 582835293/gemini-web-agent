@@ -27,7 +27,7 @@ cd gemini-web-agent && python scripts/setup_skill.py --auto
 python scripts/setup_skill.py --check-update
 python scripts/setup_skill.py --update
 ```
-`setup_skill.py` 会自动完成：① 同步 Skill 至全球目录（如 `~/.gemini/config/skills/gemini-web-agent`）并写入版本校验元数据 `.skill_version.json`；② 创建独立 `.venv` 并安装 `playwright`、`Pillow`（不下载 300MB 冗余浏览器）；③ 自动探测本机 **AgentLimb MCP** 与 **Chrome 调试端口** 状态并输出 JSON 报告；④ 支持 `--check-if-stale`（24h 缓存零延迟）与 `--update`（自动 `git pull` 或 GitHub ZIP 兜底同步升级）。
+`setup_skill.py` 会自动完成：① 同步 Skill 至全球目录（如 `~/.gemini/config/skills/gemini-web-agent`）并写入版本校验元数据 `.skill_version.json`；② 创建独立 `.venv` 并安装 `playwright`（不下载 300MB 冗余浏览器）；③ 自动探测本机 **AgentLimb MCP** 与 **Chrome 调试端口** 状态并输出 JSON 报告；④ 支持 `--check-if-stale`（24h 缓存零延迟）与 `--update`（自动 `git pull` 或 GitHub ZIP 兜底同步升级）。
 
 ---
 
@@ -51,8 +51,6 @@ python scripts/setup_skill.py --update
    - **通道 B（备用）：Playwright CDP CLI（[`scripts/gemini_web.py`](scripts/gemini_web.py)）** — 在 Chrome 地址栏开启 `chrome://inspect/#remote-debugging`（或独立隔离工作目录）后配合 `daemon` 使用，支持多端用量巡检、对话、异步任务、生图、生视频、作曲、TTS 与 Build 工程导出；支持 **`--file` / `--system-file` / `attach`** 无弹窗直传本地文件，且默认复用当前同类会话窗口（开新对话传 `--new-chat`）。*(注：Chrome 136+ 已禁止对默认 `User Data` 使用 `--remote-debugging-port=9222`，日常主力多账号环境强烈建议直接用通道 A)*。
 3. **先查后用，额度感知调度（内置 Antigravity 本地双轨与路由检测）**
    - 激活后支持巡检 `gemini.google.com/usage` 与 `flow.google.com` 独立点数余额，并**内置 [`scripts/inspect_antigravity.py`](scripts/inspect_antigravity.py)**（纯标准库零依赖，可探测本地 Antigravity Connect-RPC 双轨配额、SQLite `gen_metadata` 后端实际路由与四维 Token 消耗；Claude Code / Codex 等客户端自动跳过本地对比，直接分流省额度）。
-4. **附带实战示例切图脚本（[`scripts/slice_sprites.py`](scripts/slice_sprites.py)，可选参考）**
-   - 作者在录制演示视频、用外部免费额度生成视觉小说《雨夜星屑茶屋》时顺手保留的示例配套脚本（用于把 Flow 一次生成的角色多表情拼图切分成独立透明立绘）；**非额度调度核心必需**，保留在此方便想模仿“全流程做游戏 / 视觉小说”玩法的同学直接参考。
 
 > 📺 **B 站实战讲解视频**：https://www.bilibili.com/video/BV1cZsV6MEVb （含零配置部署演示、多模态素材流水线与真实额度消耗对比）
 
@@ -68,9 +66,8 @@ gemini-web-agent/
 ├── scripts/
 │   ├── setup_skill.py        # AI 一键自动安装、建 .venv 与通道自检脚本
 │   ├── gemini_web.py         # Playwright CDP 备用全功能 CLI 脚本
-│   ├── inspect_antigravity.py # 内置 Antigravity 本地双轨配额、后端路由与 Token 消耗检测脚本
-│   └── slice_sprites.py      # [示例配套] 视觉小说/游戏立绘网格切图脚本（B站演示同款，可选）
-├── requirements.txt          # Python 依赖（playwright, Pillow）
+│   └── inspect_antigravity.py # 内置 Antigravity 本地双轨配额、后端路由与 Token 消耗检测脚本
+├── requirements.txt          # Python 依赖（playwright）
 └── README.md
 ```
 
