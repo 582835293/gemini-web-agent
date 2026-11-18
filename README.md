@@ -15,7 +15,7 @@
 
 ```text
 请帮我拉取并自动配置这个 Skill：https://github.com/582835293/gemini-web-agent
-（克隆后运行 python scripts/setup_skill.py --auto，并按输出的 JSON 检查浏览器通道状态）
+（克隆后运行 python scripts/setup_skill.py --auto，并按输出的状态结果检查浏览器通道）
 ```
 
 你也可以手动执行两条命令完成零配置初始化，或一键检查/升级 Skill 到最新版：
@@ -27,7 +27,7 @@ cd gemini-web-agent && python scripts/setup_skill.py --auto
 python scripts/setup_skill.py --check-update
 python scripts/setup_skill.py --update
 ```
-`setup_skill.py` 会自动完成：① 同步 Skill 至全球目录（如 `~/.gemini/config/skills/gemini-web-agent`）并写入版本校验元数据 `.skill_version.json`；② 创建独立 `.venv` 并安装 `playwright`（不下载 300MB 冗余浏览器）；③ 自动探测本机 **AgentLimb MCP** 与 **Chrome 调试端口** 状态并输出 JSON 报告；④ 支持 `--check-if-stale`（24h 缓存零延迟）与 `--update`（自动 `git pull` 或 GitHub ZIP 兜底同步升级）。
+`setup_skill.py` 会自动完成：① 同步 Skill 至全球目录（如 `~/.gemini/config/skills/gemini-web-agent`）并写入版本校验元数据 `.skill_version.json`；② 创建独立 `.venv` 并安装 `playwright`（不下载 300MB 冗余浏览器）；③ 自动探测本机 **AgentLimb MCP** 与 **Chrome 调试端口** 状态并输出精简行摘要（加 `--json` 可看完整结构）；④ 支持 `--check-if-stale`（24h 缓存零延迟）与 `--update`（自动 `git pull` 或 GitHub ZIP 兜底同步升级）。
 
 ---
 
@@ -111,10 +111,10 @@ python -m venv .venv
 $py = ".\.venv\Scripts\python.exe"
 $cli = ".\scripts\gemini_web.py"
 
-# 1. 多端实时额度巡检（Gemini 网页主额度 + Google Flow 独立点数 + Antigravity 本地双轨对比）
+# 1. 多端实时额度巡检（默认均输出极简行摘要省 Token；完整版可加 --json / --markdown）
 & $py $cli usage --include-flow
 & $py $cli flow-usage
-python .\scripts\inspect_antigravity.py --markdown   # 仅 Antigravity 环境按需对比本地 5h/周配额与路由
+python .\scripts\inspect_antigravity.py   # 仅 Antigravity 环境按需对比本地 5h/周配额与路由
 
 # 2. Google Flow：0 点数 Nano Banana 2.1 生图并下载 2K 高清 / 独立点数生视频
 & $py $cli flow --media image --model "Nano Banana 2.1" --aspect 16:9 --count 1 --resolution 2K --prompt "a glowing cyberpunk energy core" --download-dir "./out"

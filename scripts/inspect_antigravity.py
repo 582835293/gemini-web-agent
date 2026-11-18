@@ -932,9 +932,41 @@ def render_markdown_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+def render_brief_report(report: dict) -> str:
+    """将完整报告浓缩为 3~4 行极简摘要，用于大幅节省本地 AI Input Token。"""
+    acc = report.get("account") or {}
+    ta = report.get("token_analytics", {})
+    recent = ta.get("recent_sessions", [])
+    td = ta.get("today", {})
+
+    head_parts = [f"acct={acc.get('email') or 'local'}({acc.get('tier_name') or '-'})"]
+    if recent:
+        curr = recent[0]
+        head_parts.append(f"ctx={curr.get('context_pct', 0)}%({curr.get('context_tokens', 0):,}/{curr.get('context_label', '-')})")
+        head_parts.append(f"routed={curr.get('routed_model', '-')}")
+    lines = [" | ".join(head_parts)]
+
+    pools_out = []
+    for pool in report.get("quota_pools", []):
+        gname = pool.get("group_name", "")
+        b_strs = [f"{b.get('window', '?')}:{b.get('remaining_pct', 0):.0f}%({b.get('countdown', '-')})" for b in pool.get("buckets", [])]
+        if b_strs:
+            pools_out.append(f"{gname}[{','.join(b_strs)}]")
+    if pools_out:
+        lines.append("pools: " + " ; ".join(pools_out))
+
+    lines.append(
+        f"today({td.get('date', '')}): turns={td.get('turns', 0)} in={td.get('input_tokens', 0):,} "
+        f"cached={td.get('cached_tokens', 0):,}({td.get('cache_hit_rate', 0):.1f}%) out={td.get('output_tokens', 0):,}"
+    )
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     report_data = build_full_report()
-    if "--markdown" in sys.argv or "-m" in sys.argv:
+    if "--json" in sys.argv:
+        print(json.dumps(report_data, ensure_ascii=False, indent=2))
+    elif "--markdown" in sys.argv or "-m" in sys.argv:
         print(render_markdown_report(report_data))
     else:
-        print(json.dumps(report_data, ensure_ascii=False, indent=2))
+        print(render_brief_report(report_data))

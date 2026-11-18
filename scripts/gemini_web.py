@@ -79,6 +79,54 @@ def _validate_files(files: list[str] | None) -> list[str]:
     return resolved
 
 
+def _short_model_name(raw: str) -> str:
+    """精简模型显示名，剔除 AI Studio 卡片附带的整段英文介绍词。"""
+    s = re.sub(r"\s+", " ", (raw or "")).strip()
+    if not s:
+        return ""
+    m = re.search(r"\b(gemini-[a-z0-9._-]+|lyria-[a-z0-9._-]+|gemma-[a-z0-9._-]+|deep-research-[a-z0-9._-]+)\b", s, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    first_line = (raw or "").splitlines()[0].strip()
+    return first_line[:60] if first_line else s[:60]
+
+
+def _write_text_output(res: dict, out_file: str) -> dict:
+    """将长回答正文直写本地文件，避免完整正文回显到终端双重消耗 Input/Output Token。"""
+    if not out_file:
+        return res
+    body = res.get("answer") if res.get("answer") is not None else res.get("text")
+    if body:
+        target = Path(out_file).expanduser().resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(body), encoding="utf-8")
+        res["saved_text_file"] = str(target)
+        res["text_chars"] = len(str(body))
+        if "answer" in res:
+            res["answer"] = ""
+        if "text" in res:
+            res["text"] = ""
+    return res
+
+
+def _format_compact_usage(res: dict) -> str:
+    """将 usage / flow-usage 结果浓缩为 1 行极简摘要。"""
+    parts: list[str] = []
+    if "current_usage" in res or "weekly_usage" in res:
+        cur = res.get("current_usage") or {}
+        wk = res.get("weekly_usage") or {}
+        plan = res.get("plan") or "gemini"
+        cur_s = f"{cur.get('used_pct', '?')}%" + (f"({cur['reset_time']})" if cur.get("reset_time") else "")
+        wk_s = f"{wk.get('used_pct', '?')}%" + (f"({wk['reset_time']})" if wk.get("reset_time") else "")
+        parts.append(f"{plan}: cur={cur_s} wk={wk_s}")
+    flow_d = res.get("flow") if isinstance(res.get("flow"), dict) else (res if "credits" in res else None)
+    if flow_d is not None:
+        pts = flow_d.get("credits")
+        rst = flow_d.get("reset_time") or ""
+        parts.append(f"flow: {pts if pts is not None else '?'}pts" + (f"({rst})" if rst else ""))
+    return " | ".join(parts) if parts else json.dumps(res, ensure_ascii=False, separators=(",", ":"))
+
+
 def _read_system_text(system_instruction: str, system_file: str) -> str:
     """合并文本形式与本地文件形式的 System Instructions。"""
     parts: list[str] = []
@@ -1064,6 +1112,7 @@ def execute_playground(
     download_dir: str = "",
     thinking_level: str = "max",
     max_output: bool = True,
+    include_thoughts: bool = False,
 ) -> dict:
     """在 AI Studio Playground 全工作台执行对话/生图/生视频/Lyria音乐/TTS配音/Deep Research。"""
     t0 = time.time()
@@ -1103,10 +1152,10 @@ def execute_playground(
         return _aistudio_run_tts(page, prompt, model_id or model, download_dir, async_send, timeout_sec, t0)
 
     if model and (not new_tab or not model_id or (model_id not in cur_url)):
-        active_model = _aistudio_select_playground_model(page, model)
+        active_model = _short_model_name(_aistudio_select_playground_model(page, model))
     else:
         card = page.locator(".model-selector-card").first
-        active_model = re.sub(r"\s+", " ", (card.inner_text() or "")).strip() if card.count() > 0 else (model_id or model)
+        active_model = _short_model_name((card.inner_text() or "") if card.count() > 0 else (model_id or model))
 
     if sys_text:
         _aistudio_set_system_instruction(page, sys_text)
@@ -1166,13 +1215,15 @@ def execute_playground(
     if "/new_chat" in (page.url or ""):
         page.wait_for_timeout(1200)
     _save_last_session("aistudio", page.url)
+    thoughts_raw = extracted.get("thoughts", "") or ""
     return {
         "status": "ok",
         "entry": "aistudio-playground",
         "model": active_model,
         "url": page.url,
         "text": extracted.get("text", ""),
-        "thoughts": extracted.get("thoughts", ""),
+        "thoughts": thoughts_raw if include_thoughts else "",
+        "thoughts_chars": len(thoughts_raw),
         "img_count": len(extracted.get("imgBlobs", [])),
         "video_count": len(extracted.get("videoBlobs", [])),
         "saved_files": extracted.get("saved_files", []),
@@ -1914,6 +1965,7 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
                         download_dir=body.get("download_dir", ""),
                         thinking_level=body.get("thinking_level", "max"),
                         max_output=body.get("max_output", True),
+                        include_thoughts=body.get("include_thoughts", False),
                     )
                 elif path == "/attach":
                     box["result"] = execute_attach(
@@ -1990,7 +2042,12 @@ def _exec_cdp(port: int | None, path: str, payload: dict, local_fn) -> dict:
         return local_fn(browser)
 
 
-def _print_result(res: dict, raw: bool, raw_keys: tuple[str, ...] = ("answer", "text", "url")) -> None:
+def _print_result(
+    res: dict,
+    raw: bool = False,
+    raw_keys: tuple[str, ...] = ("answer", "text", "url"),
+    as_json: bool = False,
+) -> None:
     if raw:
         for k in raw_keys:
             if res.get(k):
@@ -1998,7 +2055,45 @@ def _print_result(res: dict, raw: bool, raw_keys: tuple[str, ...] = ("answer", "
                 return
         print("")
         return
-    print(json.dumps(res, ensure_ascii=False, indent=2))
+    if as_json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return
+    if "current_usage" in res or "weekly_usage" in res or "credits" in res:
+        print(_format_compact_usage(res))
+        return
+    meta_parts: list[str] = [str(res.get("status") or "ok")]
+    if res.get("model"):
+        meta_parts.append(f"model={_short_model_name(str(res['model']))}")
+    rs = res.get("run_settings") or {}
+    if rs.get("thinking_level"):
+        meta_parts.append(f"think={rs['thinking_level']}")
+    if rs.get("max_output_tokens"):
+        meta_parts.append(f"max_out={rs['max_output_tokens']}")
+    if res.get("saved_text_file"):
+        meta_parts.append(f"out={res['saved_text_file']}({res.get('text_chars', 0)}c)")
+    if res.get("saved_files"):
+        meta_parts.append(f"files={','.join(str(x) for x in res['saved_files'])}")
+    if res.get("attached_files"):
+        meta_parts.append(f"attached={','.join(str(x) for x in res['attached_files'])}")
+    if res.get("extracted_dir"):
+        meta_parts.append(f"dir={res['extracted_dir']}")
+    elif res.get("zip_path"):
+        meta_parts.append(f"zip={res['zip_path']}")
+    url = res.get("url") or res.get("project_url") or res.get("app_url")
+    if url:
+        meta_parts.append(f"url={url}")
+    if res.get("elapsed_sec") is not None:
+        meta_parts.append(f"{res['elapsed_sec']}s")
+    print(" | ".join(meta_parts))
+    if not res.get("saved_text_file"):
+        body = res.get("answer") or res.get("text") or ""
+        if body:
+            print("---")
+            print(body)
+
+
+def _add_json_flag(p) -> None:
+    p.add_argument("--json", dest="as_json", action="store_true", help="输出完整 JSON（默认直接输出极简行协议以省 Token）")
 
 
 def main() -> None:
@@ -2020,16 +2115,21 @@ def main() -> None:
     p_ask.add_argument("--tab-hint", default="", help="指定复用的会话 URL 或片段")
     p_ask.add_argument("--async-send", action="store_true", help="异步发射：发包拿到会话 URL 后立即返回不等待完成")
     p_ask.add_argument("--timeout", type=int, default=180, help="同步等待超时秒数")
+    p_ask.add_argument("--out-file", default="", help="将正文直接写入本地文件，stdout 仅返回极简回执")
     p_ask.add_argument("--raw", action="store_true", help="仅输出纯文本回答")
+    _add_json_flag(p_ask)
     p_ask.add_argument("--port", type=int, default=None)
 
     p_fetch = sub.add_parser("fetch", help="检查并回收 gemini.google.com 异步任务或已有会话的最新结果")
     p_fetch.add_argument("--tab-hint", default="", help="目标会话 URL 片段或会话 ID")
+    p_fetch.add_argument("--out-file", default="", help="将正文直接写入本地文件，stdout 仅返回极简回执")
     p_fetch.add_argument("--raw", action="store_true", help="仅输出纯文本回答")
+    _add_json_flag(p_fetch)
     p_fetch.add_argument("--port", type=int, default=None)
 
     p_usage = sub.add_parser("usage", help="检测网页端 https://gemini.google.com/usage 用量限额")
     p_usage.add_argument("--include-flow", action="store_true", help="同时检测 Google Flow 独立点数余额")
+    _add_json_flag(p_usage)
     p_usage.add_argument("--port", type=int, default=None)
 
     p_pg = sub.add_parser("playground", help="在 AI Studio Playground (对话/生图/生视频/Lyria音乐/TTS配音/Research) 运行")
@@ -2045,6 +2145,8 @@ def main() -> None:
     p_pg.add_argument("--file", dest="files", action="append", default=[], help="无弹窗上传本地文件（可多次传入，支持 txt/md/pdf/docx/图片/音视频）")
     p_pg.add_argument("--thinking-level", default="max", help="思考等级: max(默认自动选最高如 Extra High) | high | medium | low | default(保留默认)")
     p_pg.add_argument("--no-max-output", action="store_true", help="不自动将 Output length 拉满至模型上限(1048576)")
+    p_pg.add_argument("--with-thoughts", action="store_true", help="在输出中附带模型完整思考链（默认省略以省 Token）")
+    p_pg.add_argument("--out-file", default="", help="将生成的文本/代码直接写入本地文件，stdout 仅返回回执")
     p_pg.add_argument("--download-dir", default="", help="将生成的图片(PNG)/视频(MP4)/音乐(MP3)/配音(WAV)落盘到指定目录")
     p_pg.add_argument("--reuse-tab", action="store_true", help="显式复用已有 AI Studio 标签页继续对话（默认已优先复用）")
     p_pg.add_argument("--new-chat", action="store_true", help="强制新开一个 AI Studio 对话窗口")
@@ -2052,12 +2154,14 @@ def main() -> None:
     p_pg.add_argument("--async-send", action="store_true", help="发送后立即返回会话 URL，不等待输出结束")
     p_pg.add_argument("--timeout", type=int, default=180, help="同步等待超时秒数")
     p_pg.add_argument("--raw", action="store_true", help="仅输出纯文本回答")
+    _add_json_flag(p_pg)
     p_pg.add_argument("--port", type=int, default=None)
 
     p_attach = sub.add_parser("attach", help="仅将本地文件无弹窗挂载到已打开的 AI Studio / Gemini 对话标签页")
     p_attach.add_argument("--file", dest="files", action="append", required=True, help="待上传的本地文件路径（可多次传入）")
     p_attach.add_argument("--site", choices=["auto", "aistudio", "gemini"], default="auto", help="目标站点（默认自动识别）")
     p_attach.add_argument("--tab-hint", default="", help="目标会话 URL 或片段")
+    _add_json_flag(p_attach)
     p_attach.add_argument("--port", type=int, default=None)
 
     p_build = sub.add_parser("build", help="在 AI Studio Build 创建/迭代全套整站工程并下载 ZIP（简单任务请优先用 ask --entry task）")
@@ -2070,9 +2174,11 @@ def main() -> None:
     p_build.add_argument("--extract", action="store_true", help="下载 ZIP 后自动解压到同名目录")
     p_build.add_argument("--async-send", action="store_true", help="提交构建指令拿到项目 URL 后立即返回")
     p_build.add_argument("--timeout", type=int, default=300, help="等待构建完成超时秒数")
+    _add_json_flag(p_build)
     p_build.add_argument("--port", type=int, default=None)
 
     p_fusage = sub.add_parser("flow-usage", help="检测 Google Flow (flow.google.com) 独立点数余额与重置时间")
+    _add_json_flag(p_fusage)
     p_fusage.add_argument("--port", type=int, default=None)
 
     p_flow = sub.add_parser("flow", help="在 Google Flow (flow.google.com) 生成图片或视频（首选入口）")
@@ -2087,6 +2193,7 @@ def main() -> None:
     p_flow.add_argument("--download-dir", default="", help="生成后自动下载媒体到指定目录")
     p_flow.add_argument("--async-send", action="store_true", help="提交后立即返回 project_url")
     p_flow.add_argument("--timeout", type=int, default=240, help="同步等待生成超时秒数")
+    _add_json_flag(p_flow)
     p_flow.add_argument("--port", type=int, default=None)
 
     args = parser.parse_args()
@@ -2127,7 +2234,8 @@ def main() -> None:
                 files=args.files,
             ),
         )
-        _print_result(res, args.raw, ("answer", "url"))
+        res = _write_text_output(res, args.out_file)
+        _print_result(res, args.raw, ("answer", "url"), as_json=args.as_json)
         return
 
     if args.cmd == "fetch":
@@ -2137,7 +2245,8 @@ def main() -> None:
             {"tab_url_hint": args.tab_hint},
             lambda b: execute_fetch(b, tab_url_hint=args.tab_hint),
         )
-        _print_result(res, args.raw, ("answer",))
+        res = _write_text_output(res, args.out_file)
+        _print_result(res, args.raw, ("answer",), as_json=args.as_json)
         return
 
     if args.cmd == "usage":
@@ -2153,12 +2262,12 @@ def main() -> None:
                     res["flow"] = execute_flow_usage(browser)
         else:
             res = _exec_cdp(args.port, "/usage", {}, execute_usage)
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+        _print_result(res, False, as_json=args.as_json)
         return
 
     if args.cmd == "flow-usage":
         res = _exec_cdp(args.port, "/flow-usage", {}, execute_flow_usage)
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+        _print_result(res, False, as_json=args.as_json)
         return
 
     if args.cmd == "playground":
@@ -2176,6 +2285,7 @@ def main() -> None:
             "download_dir": args.download_dir,
             "thinking_level": args.thinking_level,
             "max_output": not args.no_max_output,
+            "include_thoughts": args.with_thoughts,
         }
         res = _exec_cdp(
             args.port,
@@ -2195,9 +2305,11 @@ def main() -> None:
                 download_dir=args.download_dir,
                 thinking_level=args.thinking_level,
                 max_output=not args.no_max_output,
+                include_thoughts=args.with_thoughts,
             ),
         )
-        _print_result(res, args.raw, ("text", "url"))
+        res = _write_text_output(res, args.out_file)
+        _print_result(res, args.raw, ("text", "url"), as_json=args.as_json)
         return
 
     if args.cmd == "attach":
@@ -2217,7 +2329,7 @@ def main() -> None:
                 tab_url_hint=args.tab_hint,
             ),
         )
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+        _print_result(res, False, as_json=args.as_json)
         return
 
     if args.cmd == "build":
@@ -2251,7 +2363,7 @@ def main() -> None:
                 timeout_sec=args.timeout,
             ),
         )
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+        _print_result(res, False, as_json=args.as_json)
         return
 
     if args.cmd == "flow":
@@ -2287,7 +2399,7 @@ def main() -> None:
                 timeout_sec=args.timeout,
             ),
         )
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+        _print_result(res, False, as_json=args.as_json)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ description: >-
 
 ## 0. 给拉取者的 AI 助手：零配置自动部署协议 (Auto-Setup Protocol)
 
-当用户让你配置或启用本 Skill 时，若发现当前环境尚未安装本技能或缺少 `.venv` 依赖，请你**直接执行以下一键初始化脚本**（纯 Python 标准库启动，无需事先安装依赖，会自动同步到 `~/.gemini/config/skills/gemini-web-agent` 并创建 `.venv`、检查 `AgentLimb` MCP 与 Chrome CDP 状态、最后输出 JSON 诊断）：
+当用户让你配置或启用本 Skill 时，若发现当前环境尚未安装本技能或缺少 `.venv` 依赖，请你**直接执行以下一键初始化脚本**（纯 Python 标准库启动，无需事先安装依赖，会自动同步到 `~/.gemini/config/skills/gemini-web-agent` 并创建 `.venv`、检查 `AgentLimb` MCP 与 Chrome CDP 状态、最后输出极简行摘要；需完整 JSON 可加 `--json`）：
 
 ```bash
 python scripts/setup_skill.py --auto
@@ -31,14 +31,14 @@ python scripts/setup_skill.py --auto
   python scripts/setup_skill.py --check-update
   python scripts/setup_skill.py --update
   ```
-  - 若 `has_update == true`，先向用户简短告知有新版本（附 `remote_message`），经同意后直接跑 `--update` 即可无痛升级。
+  - 若输出 `update=available`，先向用户简短告知有新版本，经同意后直接跑 `--update` 即可无痛升级。
 
-- 读取脚本输出的 JSON（**严格遵守浏览器账号安全红线**）：
+- 读取脚本输出的状态行（如 `ok=true | commit=... | A=ready | B=... | deps=ok`，**严格遵守浏览器账号安全红线**）：
   - **【绝对红线】严禁 AI 擅自 `taskkill` / 强杀用户正在运行的 Chrome 进程，严禁擅自对日常 Chrome 添加 `--user-data-dir` 临时目录、修改桌面快捷方式或复制迁移 `User Data` 目录**（Chrome 136+ 已禁止对默认目录开启 `--remote-debugging-port`，强杀或切目录会导致原本已登录的多邮箱账号、Cookies 与浏览器扩展被隔离或注销，甚至触发新注册账号风控验证！）。
-  - 若 `channel_a_agentlimb.configured == true`：直接通过 `agentlimb` MCP 控制外部 Chrome（**最稳首选**，不改启动参数，重启电脑直接用）。
-  - 若 `channel_a_agentlimb.configured == false` 且 `channel_b_cdp.cdp_http_ready == true`（或已完成 Chrome 远程调试确认）：直接使用 `venv.venv_python` 搭配 `cli_script` 走 Chrome CDP 备用通道。
-  - 若 `channel_b_cdp.cdp_mode == "chrome_ui_approval_required"`：说明 Chrome 是通过浏览器内开关监听调试端口（未暴露 `/json/version`）；优先安装/切回通道 A，若必须用通道 B，建议运行 `gemini_web.py daemon` 并在 Chrome 弹窗点一次“允许远程调试”（避免每条命令重复弹窗）。
-  - 若两通道均未开启：**强烈推荐引导用户直接安装 AgentLimb 扩展 MCP**（https://github.com/hooosberg/AgentLimb `>= v0.8.2`）；若用户坚持走无扩展通道 B，仅允许指导用户在现有 Chrome 地址栏手动打开 `chrome://inspect/#remote-debugging` 启用内置调试开关（不改启动参数、不强关浏览器）。
+  - 若 `A=ready`：直接通过 `agentlimb` MCP 控制外部 Chrome（**最稳首选**，不改启动参数，重启电脑直接用）。
+  - 若 `A=off` 且 `B=http_ready`（或已完成 Chrome 远程调试确认）：直接使用默认输出的 `py` 搭配 `cli` 走 Chrome CDP 备用通道。
+  - 若 `B=chrome_ui_approval_required`：说明 Chrome 是通过浏览器内开关监听调试端口（未暴露 `/json/version`）；优先安装/切回通道 A，若必须用通道 B，建议运行 `gemini_web.py daemon` 并在 Chrome 弹窗点一次“允许远程调试”（避免每条命令重复弹窗）。
+  - 若两通道均未开启（`A=off` 且 `B=inactive`）：**强烈推荐引导用户直接安装 AgentLimb 扩展 MCP**（https://github.com/hooosberg/AgentLimb `>= v0.8.2`）；若用户坚持走无扩展通道 B，仅允许指导用户在现有 Chrome 地址栏手动打开 `chrome://inspect/#remote-debugging` 启用内置调试开关（不改启动参数、不强关浏览器）。
 
 ---
 
@@ -102,7 +102,7 @@ python scripts/setup_skill.py --auto
      - 方案：`[data-usage-island-root] header span`
      - **当前用量**：`[data-testid="current-usage"]`（`已使用 X%` / `重置时间`）
      - **每周限额**：`[data-testid="weekly-usage"]`（`已使用 Y%` / `重置时间`）
-   - CLI 备用：`python ...\gemini_web.py usage --include-flow`
+   - CLI 备用：`python ...\gemini_web.py usage --include-flow`（默认输出 1 行极简额度摘要；需完整 JSON 可加 `--json`）
    - 兜底：若出现 `[data-test-id="announcement-banner-container"]` / `[role="alert"]` 限流提示，立即切换 AI Studio Playground（`key_off`）或 Google Flow。
 2. **Google Flow（`flow.google.com`）独立点数检测**：
    - 后台开 `tab_new(url="https://flow.google.com/", active=false)` → 点击 `[aria-label="账号详情"]`（`PRO`）→ 读取 `[role="dialog"]` 内 `X 个 Google Flow 点数` 与 `重置时间` 后 `tab_close`。
@@ -111,10 +111,14 @@ python scripts/setup_skill.py --auto
    - Playground 未选中 API Key（左上工具栏显示 `key_off`）时直接使用 AI Studio 网页免费额度（`Paid` 模型除外）；若绑有 API Key，可在 `/rate-limit` 与 `/usage` 查看免费/付费层级 RPM/TPM/RPD。
 4. **本地 Antigravity 实时额度与底层路由对比（内置脚本，仅 Antigravity 环境按需执行；Claude Code / Codex / Cursor 等其他客户端请直接跳过此步）**：
    ```powershell
-   # 直接调用本 Skill 内置的 inspect_antigravity.py（纯 Python 标准库，无需额外安装外部监控技能）
-   python "$env:USERPROFILE\.gemini\config\skills\gemini-web-agent\scripts\inspect_antigravity.py" --markdown
+   # 默认仅输出 3 行精简摘要（省 ~98% Token）；完整诊断表再加 --markdown
+   python "$env:USERPROFILE\.gemini\config\skills\gemini-web-agent\scripts\inspect_antigravity.py"
    ```
-   > macOS / Linux 可直接执行本 Skill 目录下的 `python3 scripts/inspect_antigravity.py --markdown`。非 Antigravity 客户端（如 Claude Code / Codex）跳过本地对比，仅巡检网页端 `/usage` 与 Flow 点数即可。
+   > macOS / Linux 可直接执行本 Skill 目录下的 `python3 scripts/inspect_antigravity.py`。非 Antigravity 客户端（如 Claude Code / Codex）跳过本地对比，仅巡检网页端 `/usage` 与 Flow 点数即可。
+
+> **极端省本地 AI Input Token 准则**：
+> - 本 Skill 所有脚本默认直接输出极简行协议（剔除 JSON 缩进、空字段与冗长模型描述/思考链 `thoughts`），仅程序解析时再传 `--json`；
+> - 长正文、完整脚本或调研报告加 `--out-file <路径>` 直接落盘，终端只收 1 行字数与路径回执。
 
 ---
 
@@ -183,7 +187,7 @@ $skillDir = "$env:USERPROFILE\.gemini\config\skills\gemini-web-agent" # 或你�
 $py = "$skillDir\.venv\Scripts\python.exe"
 $cli = "$skillDir\scripts\gemini_web.py"
 
-# 1. 多端实时额度查询
+# 1. 多端实时额度查询（默认输出 1 行摘要；需完整 JSON 可加 --json）
 & $py $cli usage --include-flow
 & $py $cli flow-usage
 
@@ -191,10 +195,10 @@ $cli = "$skillDir\scripts\gemini_web.py"
 & $py $cli flow --media image --model "Nano Banana 2.1" --aspect 16:9 --count 1 --resolution 2K --prompt "提示词" --download-dir "C:\path\to\out"
 & $py $cli flow --media video --model "Omni 1.2 Flash" --aspect 16:9 --resolution 720p --count 1 --prompt "提示词" --download-dir "C:\path\to\out"
 
-# 3. AI Studio Playground 全能直达（默认复用同窗口长任务；带 --system-file / --file 无弹窗传入设定；开新对话传 --new-chat）
-& $py $cli playground --model hydrogen --system-file "世界观设定.md" --file "人物小传.pdf" --prompt "写出第1章大纲" --new-chat --raw
-& $py $cli playground --model hydrogen --prompt "基于第1章大纲继续写正文" --raw   # 自动复用同一窗口/会话
-& $py $cli playground --model research --prompt "深度调研主题" --new-chat --raw
+# 3. AI Studio Playground 全能直达（默认复用同窗口+拉满思考与输出+屏蔽长thoughts；--out-file 直写文件最省额度）
+& $py $cli playground --model hydrogen --system-file "世界观设定.md" --file "人物小传.pdf" --prompt "写出第1章大纲" --out-file "chapter1_outline.md" --new-chat
+& $py $cli playground --model hydrogen --prompt "基于第1章大纲继续写正文" --out-file "chapter1.md"   # 自动复用同一窗口/会话且不进正文到stdout
+& $py $cli playground --model research --prompt "深度调研主题" --out-file "research.md" --new-chat
 & $py $cli playground --model nano2.1 --prompt "watercolor illustration of a cozy lantern" --download-dir "C:\path\to\out"
 & $py $cli playground --model omni1.2 --prompt "raindrops glowing on a warm bakery window at night" --download-dir "C:\path\to\out"
 & $py $cli playground --model lyria --prompt "warm cozy solo piano and rain ambience, 100bpm" --download-dir "C:\path\to\out"

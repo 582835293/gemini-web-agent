@@ -469,6 +469,7 @@ def main() -> None:
     parser.add_argument("--check-if-stale", action="store_true", help="仅当距离上次检查超过 --cache-hours 小时才联网查更新")
     parser.add_argument("--cache-hours", type=float, default=24.0, help="自动更新检查缓存小时数（默认 24 小时）")
     parser.add_argument("--update", action="store_true", help="自动从 GitHub 拉取最新版并重新同步全局 Skill 目录")
+    parser.add_argument("--json", action="store_true", help="输出完整 JSON 诊断报告（默认仅输出极简行摘要）")
     args = parser.parse_args()
 
     source_root = Path(__file__).resolve().parent.parent
@@ -477,16 +478,35 @@ def main() -> None:
     if args.update:
         try:
             res = apply_update(source_root, target_dir, skip_pip=args.skip_pip)
-            print(json.dumps({"ok": True, **res}, ensure_ascii=False, indent=2))
+            if args.json:
+                print(json.dumps({"ok": True, **res}, ensure_ascii=False, indent=2))
+            else:
+                print(
+                    f"updated | method={res['method']} | {res.get('previous_commit') or '-'}->{res.get('current_commit') or '-'}"
+                )
         except Exception as e:
-            print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False, indent=2))
+            if args.json:
+                print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False, indent=2))
+            else:
+                print(f"update_failed | {e}")
             sys.exit(1)
         return
 
     if args.check_update or args.check_if_stale:
         cache_h = args.cache_hours if args.check_if_stale and not args.check_update else 0.0
         res = check_for_updates(target_dir if target_dir.exists() else source_root, source_root, cache_hours=cache_h)
-        print(json.dumps({"ok": True, "skill_name": SKILL_NAME, **res}, ensure_ascii=False, indent=2))
+        if args.json:
+            print(json.dumps({"ok": True, "skill_name": SKILL_NAME, **res}, ensure_ascii=False, indent=2))
+        else:
+            loc = res.get("local_commit") or "-"
+            rem = res.get("remote_commit") or "-"
+            if res.get("has_update"):
+                print(f"update=available | local={loc} remote={rem} | msg={res.get('remote_message') or ''}")
+            elif res.get("error"):
+                print(f"update=check_error | local={loc} | err={res['error']}")
+            else:
+                src_tag = "cache" if res.get("cache_hit") else "net"
+                print(f"update=latest({loc}) | via={src_tag}")
         return
 
     synced = False
@@ -548,7 +568,21 @@ def main() -> None:
         "safety_rules": safety_rules,
         "next_actions": next_actions,
     }
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        a_tag = "ready" if agentlimb_info["configured"] else "off"
+        b_tag = cdp_info["cdp_mode"]
+        deps_tag = "ok" if venv_info["dependencies_ready"] else "missing"
+        print(
+            f"ok={str(venv_info['dependencies_ready']).lower()} | commit={version_meta.get('installed_commit') or '-'} "
+            f"| A={a_tag} | B={b_tag} | deps={deps_tag} | py={venv_info['venv_python']} | cli={target_dir / 'scripts' / 'gemini_web.py'}"
+        )
+        if not agentlimb_info["configured"] or not venv_info["dependencies_ready"]:
+            for rule in safety_rules:
+                print(f"rule: {rule}")
+            for act in next_actions:
+                print(f"next: {act}")
     if not venv_info["dependencies_ready"]:
         sys.exit(1)
 

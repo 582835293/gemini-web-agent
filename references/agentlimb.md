@@ -6,7 +6,9 @@
 
 ## 日常使用要点
 1. **永久免弹窗与跨重启信任**：首次配对成功后信任状态持久化保存，后续启动 Antigravity 与 Chrome 自动连通，无需重配或点调试允许框。
-2. **省 Token 调用原则**：控制网页端 Gemini 时，优先使用 `javascript_eval` / `browser_batch` 直接定位实测锚点，避免反复截图与 `read_page` 消耗大量 Token。
+2. **省 Token 调用原则（降轮次 + 砍无效回传 + 防 20s 超时）**：
+   - 严禁截图与全页 `read_page`；将「调 `Extra High` + 展开高级设置拉满 `1048576` + 填 Prompt + 点 `Run`」合并在 **1 次 `javascript_eval`** 内并立即返回（注：`javascript_eval` 有 **20s CDP 执行上限**，勿在单次 JS 内死等长推理，发包后改用 `wait` 再另调一次 JS 提取）；
+   - 提取 AI Studio 回答时**务必排除 `ms-thought-chunk, mat-expansion-panel` 思考块**，只返回最终正文；长文章/大代码建议在页面直接触发下载或只取字符数+首尾摘要，避免把几万字正文重复读入本地上下文。
 3. **多账号并发**：Chrome 多 Profile 同时启用 AgentLimb 后，所有工具传 `browser: "<ProfileID或别名>"` 即可路由到不同账号分担额度。
 4. **长任务窗口复用**：连续创作/改代码时先用 `tabs_context` 查找并复用已打开的 `/prompts/...` 或 `/app/...` 标签页，避免每轮都新开 `new_chat` 打断上下文。
 5. **AI Studio 无弹窗传文件模板（实测可用）**：本地读出文件 Base64 后，在 AI Studio Tab 执行：
