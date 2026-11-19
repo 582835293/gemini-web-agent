@@ -1,155 +1,113 @@
 ---
 name: gemini-web-agent
 description: >-
-  利用外部 Chrome 调度三大网页站点全模态渠道分担任务、最大化节省本地 Antigravity 配额：
-  (1) aistudio.google.com 全模型免 Key 免费额度（key_off）：覆盖文本推理/1M长输出（4 Neon/4 Hydrogen/4 Argon）、生图改图（Nano Banana 2.1）、生视频（Omni 1.2 Flash/1.1 Flash）、完整歌曲（Lyria 3.5）、语音配音与剧本对话（Gemini 3.8 Flash TTS）、录音转写（3.5 Transcribe）、Live 实时对话同传（3.8 Live/3.5 Live Translate）、Deep Research 与 Build 整站应用导出；
-  (2) flow.google.com 独立点数池（Nano Banana 2.1 生图 0 点数 + 2K 高清重塑、Omni 1.2 Flash / Veo 3.1 - Lite 生视频）；
-  (3) gemini.google.com 对话模式、异步任务模式 (Task)、制作音乐/图片/视频、Canvas 与 Deep Research（已支持 4 Hydrogen / 4 Neon）。
-  激活后先检测各端额度并按需对比本地额度，询问用户要使用的站点、模式与模型后，再优先通过 AgentLimb MCP（或备用 gemini_web.py）调度外部 Chrome。
-  当用户提到“网页端 Gemini”、“Google Flow”、“Flow”、“AI Studio”、“Playground”、“Build模式”、“Lyria”、“TTS配音”、“生图”、“生视频”、“生音乐”、“利用网页版额度”、“省额度”、“任务模式”、“异步 agent”时激活。
+  将本地配额留给核心决策，把海量生成、沙盒研发与多模态重活全部外包给外部 Chrome 员工标签页（默认以 AgentLimb 复用日常 Chrome 为免重登稳妥托底，若用户已启用独立 Profile / CDP 则自动切换高速通道 B `wave` 并发引擎；兼顾双模自适应总监 + Google Drive 云端共享总线 + Import Code + 审计门禁）：
+  (1) aistudio.google.com Playground (key_off 免费纯文本大脑：总监/架构/审稿/文案，自动存 Google Drive 供下游 Task 直接拉取；按快慢调 minimal/low/medium/high/extra_high；另有 Lyria 3.5 配乐、3.8 Flash TTS 配音、Omni 1.2 视频、Nano Banana 2.1 生图)；
+  (2) gemini.google.com/app 专注 `任务 (Task)`（自带 Debian 12 断网沙盒 + 预装 python3/node/gcc/ffmpeg/libreoffice/chromium/PIL/cv2/pandas/pydub；支持 Google Drive 读取与 More uploads -> Import code 导入本地文件夹/GitHub 仓库）；
+  (3) aistudio.google.com/apps Build（整站外包团队：MAX + 4 Neon，必带防擅自加料契约）；
+  (4) flow.google.com 独立点数池（Nano Banana 2.1 生图 0 点数 + x1 + 2K）。
+  当用户提到“网页端 Gemini”、“Google Flow”、“Flow”、“AI Studio”、“Playground”、“Build模式”、“Lyria”、“TTS配音”、“生图”、“生视频”、“生音乐”、“利用网页版额度”、“省额度”、“任务模式”、“异步 agent”、“多标签页协作/分角色团队”时激活。
 ---
 
-# Gemini Web-Agent（三站点全模态与额度调度）
+# Gemini Web-Agent（双模自适应总监 + 托底安全/并发自选 + 防伪造门禁）
 
-优先通过 **AgentLimb MCP**（永久免弹窗操控已登录外部 Chrome），或备用 [gemini_web.py](scripts/gemini_web.py)，统筹调度 **`aistudio.google.com`**、**`flow.google.com`** 与 **`gemini.google.com`**（含 Jio 会员 / 部分 Pro 账号绕过本地缺 `4 Neon` / `4 Hydrogen` / `4 Argon` 与 5h 限流的“曲线救国”场景）。
+> **【防偷懒与防串台四条死令（违者视为任务彻底失败）】**
+> 1. **严禁多个角色共用同一个标签页/会话**：通道 B 必须通过 `wave` 或 `--role <role>` 自动分配独立 Tab（CLI 内置 `ROLE_URL_CONFLICT` 拦截）；通道 A 必须对每个新角色调用 `tab_new` + `roster set --tab-id`（CLI `ROLE_TAB_CONFLICT` + JS `window.__WEB_TEAM_ROLE` 双重拦截）。
+> 2. **模式 B 下严禁本地 `write_file` 编写业务源码，严禁用 Canvas 几何块或 WebAudio 振荡器伪造替代 Flow/Lyria/TTS 资产**：所有外包代码必须由网页员工产出并经 `wave --unpack-json-dir` 或 `harvest --unpack-json` 落盘；美术/音频必须真实生成下载入 `assets/`（模式 A 本地强模型也严禁手写万字或手抄大产物）。
+> 3. **通道选择与用户知情自选 + 防风控节流原则**：先看 `setup_skill.py` 输出——若用户已自备且运行了 `prefer=B`，使用高速通道 B (`gemini_web.py wave` 默认带 `3.5s` 拟人错峰与新页水合停顿，严禁 `--stagger 0` 疯狂连刷防风控)；若仅 `prefer=A`，优先稳妥走 AgentLimb 托底（禁 `read_page`/`form_input`/`computer`，`javascript_eval` 用 `expression`，`wait` 用 `timeout`，每次操作后留自然间隔），**绝不未征得用户同意擅自拉起需重新登录的新 Chrome 窗口！**
+> 4. **完工交差前必跑 `roster audit` 门禁**：交付前必须运行 `python scripts/gemini_web.py roster audit --file "<项目>/.web-team.json" --project-dir "<项目>"`，返回 `ok | audit=passed` 方可验收；出现 `MISSING_FLOW_IMAGES` / `MISSING_AUDIO_FILES` / `DUPLICATE_TAB_ID` / `DUPLICATE_SESSION_URL` 必须立刻补齐真实外包！
 
 ---
 
-## 0. 自动初始化、更新检查与账号安全红线
+## 0. 自动初始化、通道透明度与安全红线
 
-1. **未安装或缺少 `.venv` 时立即运行**（默认输出 1 行极简摘要，需完整 JSON 加 `--json`）：
+1. **首次或排查环境运行**（默认返回极简 1 行含 `prefer=B|A`）：
    ```bash
    python scripts/setup_skill.py --auto
-   python scripts/setup_skill.py --check-if-stale   # 24h 内命中缓存 10ms 返回；超时查更新；遇 update=available 经同意跑 --update
+   python scripts/setup_skill.py --check-if-stale   # 24h 内 10ms 返回；遇 update=available 经同意跑 --update
    ```
-2. **【绝对红线】严禁 `taskkill` / 强杀用户正在运行的 Chrome，严禁擅自对日常 Chrome 添加 `--user-data-dir` 临时目录、改快捷方式或迁移 `User Data`**（Chrome 136+ 已禁默认目录开 `--remote-debugging-port`，强改会注销多邮箱登录与扩展或触发风控）。
-3. **按 `setup_skill.py` 状态选通道**：
-   - `A=ready`：首选 **`agentlimb` MCP**；
-   - `A=off` 且 `B=http_ready`：用输出中的 `py` 调 `cli`（通道 B）；
-   - `B=chrome_ui_approval_required`：优先装 AgentLimb（`>= v0.8.2`），坚持走 B 则先跑 `gemini_web.py daemon` 并在 Chrome 弹窗点一次允许；
-   - `A=off` 且 `B=inactive`：推荐装 AgentLimb MCP（`references/agentlimb.md`），或在现有 Chrome 地址栏打开 `chrome://inspect/#remote-debugging` 开启调试。
+2. **【通道说明与选择权交给用户（防“盗号”误解）】**：
+   - **默认免重登托底首选（通道 A：AgentLimb MCP）**：直接复用你正在用的日常 Chrome 已登录账号，无需新建目录、无需重新输入 Google 账号密码，开箱稳妥；适合常规需求，但受浏览器原子通信限制，多波次并发时本地往返次数较多、整体较慢。
+   - **高速并发可选方案（通道 B：独立 AI Chrome Profile，`--setup-ai-chrome --launch-ai-chrome`）**：如你想用 `gemini_web.py wave` 单条命令并发跑完多 Tab（提速 5~10 倍、省 80%+ 本地 Token），可**自主选择**在本机新建一个与日常 Chrome 彻底隔离的专用目录（`~/.gemini-web-chrome` + 端口 `9229`）。**需要你本人明确同意后才创建，并在该新窗口自己登录一次 Google 账号**（开源脚本纯本地运行，绝不触碰日常 `User Data`、绝不收集或上传任何账号凭证）。也可在日常 Chrome 地址栏开启 `chrome://inspect/#remote-debugging` 后按弹窗允许免重登直连通道 B。
+3. **【绝对红线】严禁 `taskkill` 强杀正在运行的日常 Chrome，严禁篡改或复制默认 `User Data`；严禁未征求用户同意擅自执行 `--setup-ai-chrome --launch-ai-chrome`！**
 
 ---
 
-## 一、 七大场景最优调度与常用主力模型
+## 一、 双模总监 + 四大部门能力边界 + 云端共享总线
 
-| 任务场景 | 首选渠道（URL & 模型） | 次选 / 兜底 | 额度与关键参数 |
-| :--- | :--- | :--- | :--- |
-| **轻量开发 / 独立原型 / 异步任务** | `gemini.google.com/app` **`任务 (Task)`（`4 Hydrogen`）**（**优先级高于 Build**，产出干净不乱加料） | Playground `gemini-4-hydrogen` / `Canvas` | 走网页主额度 |
-| **日常推理 / 1M 长输出 / 代码** | `aistudio.google.com/prompts/new_chat?model=gemini-4-hydrogen` | `gemini.google.com/app`（`任务` / 对话） | **`key_off` 免费**；Thinking 拉 `Extra High`，输出拉 `1048576` |
-| **复杂架构 / 深度研究** | `aistudio.google.com/prompts/new_chat?model=gemini-4-neon`（或 `gemini-4-argon` / `deep-research-preview-04-2026`） | `gemini.google.com/app`（`4 Neon` / `Deep Research`；Web 端 `4 Argon` 已替换为 `4 Neon`） | AI Studio **`key_off`**；自动选非 `Paid` 最高 Thinking（`Extra High`）+ `1048576` |
-| **图片生成与参考改图** | `flow.google.com`（`Nano Banana 2.1`，**0 点数**，务必改 **`x1`**，可下 `2K`） | Playground `gemini-nano-banana-2.1`（`key_off`）/ Gemini `制作图片` | Flow 每日数十张免费；参考图改图见 `references/agentlimb.md` |
-| **视频生成（含原生音频）** | `aistudio.google.com/prompts/new_chat?model=gemini-omni-1.2-flash`（最高 15s） | Flow（`Omni 1.2 Flash` 8~24 点 / `Veo 3.1 - Lite` 10 点，选 `x1`） | AI Studio **`key_off` 免费不扣 Flow 点数** |
-| **完整歌曲 / 配音 / 转写** | `aistudio.google.com/new_music?model=lyria-3.5` / `/generate-speech?model=gemini-3.8-flash-tts` | `gemini.google.com` `制作音乐` / `?model=gemini-3.5-transcribe` | **`key_off` 免费**（MP3 / WAV base64 直出） |
-| **从零构建一整套完整工程** | `aistudio.google.com/apps`（**仅用于整套工程**，选 **`MAX` + `Gemini 4 Neon`**，其次 `Argon`，避开 `Paid`） | `gemini.google.com` **`任务 (Task)`**（局部需求用 Task） | 走 Pro 网页额度，导出 `.zip` |
+- **模式 A（本地已是高级模型，仅省 5h 额度）**：本地直接挂帅当总监，按编队卡定死契约并经用户确认后直接用 `wave` 并发外包重活，省去外部总监等待。
+- **模式 B（本地是 `3.8 Flash` 等轻量/受限模型）**：**连规划与写 Prompt 一起外包**！先用 `--role director` 投喂 [references/director_prompt.md](references/director_prompt.md) 拆出澄清问题与全套工单，禁止本地自己拍脑门写代码。
 
-> **常用直达 `model-id`**：`gemini-4-neon` · `gemini-4-hydrogen` · `gemini-4-argon` · `deep-research-preview-04-2026` · `gemini-nano-banana-2.1` · `gemini-omni-1.2-flash` · `lyria-3.5` · `gemini-3.8-flash-tts` · `gemini-3.5-transcribe`。其余小众/历史/Paid 模型速查（含 Flow 停用提示）见 [references/models.md](references/models.md)。
+| 部门渠道 | 定位与分工 | 关键参数 / 能力边界（务必写入工单） |
+| :--- | :--- | :--- |
+| **AI Studio Playground**<br>(`/prompts/new_chat?model=<id>`, `key_off`) | **纯文本大脑组**（`4 Neon` / 快手 `4 Hydrogen` / `deep-research-preview-04-2026`） | **Thinking Level 调速**：快活 `low`/`medium`；常规研发 `high`；复杂架构 `extra_high`。Output 拉 `1048576`；代码要求输出单个 JSON `{相对路径: 内容}`（通道 B 传 `unpack_json_dir` 自动解包落盘）。**传 `--title "[项目] 角色"` 同步命名到 Google Drive**。 |
+| **Gemini Web `任务 (Task)`**<br>(`gemini.google.com/app`, 弃用 Web 聊天) | **带 Linux 电脑的实战员工**（主程/自测用 **`4 Neon`**；后期/清洗用 **`4 Hydrogen`**） | **Debian 12 沙盒（2C / 7.8G / 19G，跨轮持久化）**：预装 `python3 3.11`、`node 18`、`gcc 12`、`git`、`ffmpeg 5.1`、`libreoffice 7.4`、`chromium 156`、`PIL`、`cv2`、`pydub`、`pandas`、`matplotlib`。<br>**硬限制**：① **完全断网**（禁 `pip/npm install`）；② 无 `zip` CLI（须用 **Python `zipfile`** 打包）。 |
+| **AI Studio Build** (`/apps`) | **整包外包公司**（仅从零建整站 Web） | 选 `MAX` + `Gemini 4 Neon`，工单必附《防擅自加料契约》锁定文件清单与接口。 |
+| **Flow + AI Studio 音频台** | **零成本素材工厂**（再可交 Task 后期） | 生图走 **`flow.google.com`**（`Nano Banana 2.1`，0 点数 `x1`，下 `1K/2K`）；音乐 `/new_music?model=lyria-3.5`；配音 `/generate-speech?model=gemini-3.8-flash-tts`；视频 `gemini-omni-1.2-flash`。 |
 
----
+### 【两大免中转协作红利（强烈优先利用）】
+1. **Google Drive 云端共享总线**：AI Studio 会话会自动保存到同一 Google 账号的 Google Drive（URL `/prompts/<drive_file_id>` 即文件 ID，`--title` 即文件名）。给上游 AI Studio 员工加上 `title`（如 `[MyApp] arch_spec`）后，**下游 Gemini Web `Task` 员工可直接检索 Google Drive 拉取该 JSON 提取源码/文档并做自动化测试或打包**，零本地下载再上传！
+2. **Gemini Web `Import code`（本地文件夹 / GitHub 直传）**：需要把整个本地项目或 GitHub 仓库交给 Gemini `Task` 审查、重构或测试时，直接用 `ask --folder "./src"` 或 `ask --github "https://github.com/..."`（或网页端 `Upload & tools -> More uploads -> Import code`），无需逐个传文件。
 
-## 二、 额度巡检与先问后用工作流
-
-> **省本地 Input Token 原则**：本 Skill 脚本默认输出 1~3 行极简摘要并屏蔽思考链 `thoughts`（程序解析再加 `--json`）；长代码/报告优先用 `--out-file <路径>` 或网页单包 Blob 下载 + `harvest`，严禁回传几万字给本地 AI 重抄。
-
-1. **多端额度检测**：
-   - **网页端 `/usage`**：通道 A 后台开 `tab_new("https://gemini.google.com/usage", active=false)` 等 `[data-testid="current-usage"]`，读取 `[data-usage-island-root] header span`、`[data-testid="current-usage"]`、`[data-testid="weekly-usage"]` 后 `tab_close`（遇 `[role="alert"]` 限流提示即切 AI Studio `key_off`）；通道 B 运行 `gemini_web.py usage --include-flow`。
-   - **Google Flow 点数**：开 `https://flow.google.com/` 点 `[aria-label="账号详情"]`，读 `[role="dialog"]` 内 `X 个 Google Flow 点数` 与重置时间后关页；通道 B 运行 `flow-usage`。
-   - **本地 Antigravity 对比（仅 Antigravity 环境，Claude Code/Codex 跳过）**：使用 `setup_skill.py` 输出的 `inspect=` 路径执行 `python "<inspect路径>"`（已内置增量缓存与轻量探测；默认 3 行极简摘要，可选 `--live-only` 仅查配额、`--all-history` 扫全部历史、`--markdown` 看详表）。
-2. **先问后用**：先汇报各端余额，通过提问工具（`ask_question` / `AskUserQuestion`）确认**入口与模型**（高优推荐 Gemini `任务 Task 4 Hydrogen`、Playground、多模态、Flow 或 Build）及**是否同意执行**，未获授权禁止发包（用户明确指定则直接跑）。
+> **速查**：模型清单见 [references/models.md](references/models.md)；5 套主流编队用 `python scripts/gemini_web.py playbook list/show` 查看（经同意后可 `playbook add` 新增）。
 
 ---
 
-## 三、 极速调用外部 Chrome（禁止派 `browser` 子代理）
+## 二、 多端额度感知与三阶段互动拍板
 
-### 通道 A（首选）：AgentLimb MCP
-
-**必守 4 条实战铁律**：
-1. **默认复用原对话标签页**：先 `tabs_context` 查找已有 `/prompts/...` 或 `/app/...` 复用，仅开新话题才建新页。
-2. **防后台冻结与防超时**：`javascript_eval` 有 **20s 上限**（发送与提取分两步，中间用 `wait`）；提取任何结果或点击下载前**务必先 `tab_activate(tabId)`** 并滚动到底，避免后台 Tab 休眠。
-3. **无弹窗上传与防多文件下载拦截**：严禁点击弹出 Windows 文件窗；同页多文件禁止连触发 `<a download>`（会被 Chrome 拦截），改打成一个 JSON Blob 下载再用 `gemini_web.py harvest --unpack-json` 落盘。
-4. **AI Studio 等待完成防踩坑**：思考期可能短时无 `Stop` 按钮，必须同时满足 `.cdk-live-announcer-element` 含 `"Response ready."`、无可见 `Stop`、且最后一条非 thought `ms-cmark-node` 非空且非 `"正在思考"`。
-
-**1. AI Studio 通用工作台（`/prompts/new_chat?model=<id>`）即用 JS 模板：**
-- **① 发包 JS（拉满最高非 Paid Thinking + `1048576` 输出 + 填 Prompt 点 Run）**（注：填框等待 `250ms` 后再点 Run）：
-  ```js
-  (async (PROMPT) => {
-    const wait = ms => new Promise(r => setTimeout(r, ms));
-    const tl = document.querySelector('mat-select[aria-label="Thinking Level"]');
-    if (tl) {
-      tl.click(); await wait(250);
-      const opts = [...document.querySelectorAll('.cdk-overlay-pane mat-option')].filter(
-        o => o.getAttribute('aria-disabled') !== 'true' && !/\bpaid\b/i.test(o.innerText)
-      );
-      const pick = opts.find(o => /extra\s*high/i.test(o.innerText)) || opts.find(o => /^high$/i.test(o.innerText.trim())) || opts.at(-1);
-      if (pick) { pick.click(); await wait(200); }
-    }
-    let out = document.querySelector('input[name="maxOutputTokens"], input[aria-label="Maximum output tokens"]');
-    if (!out || out.getBoundingClientRect().height <= 0) {
-      [...document.querySelectorAll('button, mat-expansion-panel-header')].find(e => /advanced\s*settings/i.test(e.innerText))?.click();
-      await wait(250);
-      out = document.querySelector('input[name="maxOutputTokens"], input[aria-label="Maximum output tokens"]');
-    }
-    if (out && out.max && out.value !== out.max) {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(out, out.max);
-      ['input', 'change', 'blur'].forEach(ev => out.dispatchEvent(new Event(ev, { bubbles: true })));
-    }
-    const ta = document.querySelector('textarea[aria-label="Enter a prompt"]');
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, PROMPT);
-    ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: PROMPT }));
-    await wait(250);
-    const runBtn = [...document.querySelectorAll('button')].find(b => !b.classList.contains('rerun-button') && !b.disabled && /^Run\b/i.test((b.innerText || '').trim()));
-    runBtn?.click();
-    return { dispatched: !!runBtn };
-  })("这里填提示词")
-  ```
-- **② 提取最终正文 JS（必须先 `tab_activate`；排除 `ms-thought-chunk`；长文只返回字符数或直接 Blob 下载）**：
-  ```js
-  (() => {
-    const turns = [...document.querySelectorAll('[data-turn-role="Model"]')];
-    const last = turns.at(-1); if (!last) return { ready: false };
-    last.scrollIntoView();
-    const tSet = new Set(last.querySelectorAll('ms-thought-chunk, mat-expansion-panel'));
-    const text = [...last.querySelectorAll('ms-cmark-node')].filter(n => !tSet.has(n) && ![...tSet].some(t => t.contains(n)) && !n.parentElement?.closest('ms-cmark-node')).map(n => n.innerText.trim()).filter(Boolean).join('\n\n');
-    const imgs = [...last.querySelectorAll('img[src^="blob:"]')].filter(i => i.naturalWidth > 200).map(i => i.src);
-    const vids = [...last.querySelectorAll('video[src^="blob:"]')].map(v => v.src);
-    return { ready: (!!text && text !== '正在思考') || imgs.length > 0 || vids.length > 0, text, imgs, vids };
-  })()
-  ```
-- **③ 无弹窗传附件**：本地命令行转 Base64 后注入 `ms-add-media-button input[type="file"], input.file-input`（`DataTransfer` 模板见 `references/agentlimb.md`），或用通道 B `attach --file`。长系统设定写 `.system-instructions-card`。
-
-**2. 专项工作台核心选择器：**
-- **音乐（`/new_music?model=lyria-3.5`）**：零状态点 `button.empty-state__title-button` → 写 `textarea[aria-label="Prompt input"]` 等 `250ms` → 点 `button.ctrl-enter-submits` → 等 `Stop composing` 消失后取 `audio[src^="data:audio/"]` 或点 `button.download-button[aria-label="Download"]`。
-- **配音（`/generate-speech?model=gemini-3.8-flash-tts`）**：零状态点 `mat-card.create-dialog-card` → 选 `button.voice-chip` → 写 `textarea[aria-label="Speech block text"]` 等 `250ms` → 点 `button.ctrl-enter-submits` → 取 `audio[src^="data:audio/"]`。
-- **Build（`/apps`，仅整套工程）**：选 **`MAX`** + Settings 切 **`Gemini 4 Neon`**（其次 `Argon`）→ 填 `div[aria-label="Describe an app and let Gemini do the rest"]` 点 `button[aria-label="Send"]` → `?showCode=true&showAssistant=true` 点 `button[aria-label="Export options"]` 下载 `.zip` 后用 `harvest` 移入工程。
-- **Flow（`flow.google.com`）**：关右侧栏或点灭 `智能体` → 点 `button[aria-label="设置触发器"]` 选媒体/比例/模型（`Nano Banana 2.1` / `Omni 1.2 Flash` / `Veo 3.1 - Lite`）并将数量改为 **`x1`** → 填 `div.ProseMirror[aria-label="您希望创作什么？"]` 点 `button[aria-label="开始生成"]` → `.tile-row` `button[aria-label="更多选项"]` → `下载`（`1K`/`2K`）。
-- **Gemini（`gemini.google.com/app`）**：切 `<gem-segmented-button>`（`对话` / `任务`）及 `bard-mode-menu-button`（`4 Hydrogen` / **`4 Neon`** / `4 Carbon` / `自动`）→ **严禁设 `innerHTML`**（`TrustedHTML`），用 `textContent` + `InputEvent('insertText')` 写入 `div[role="textbox"]` 点 `button[aria-label="发送"]`。注意网页端拦截合成 `DataTransfer`，大附件切 AI Studio 或调 `gemini_web.py --file`。
-
-**收尾与释放**：通道 A 调用 `agentlimb:say` 释放 Chrome 侧边栏运行状态（避免界⾯悬挂“正在操作”）；通道 B 已内置 `5000ms` CDP 快速失败、正向 DOM 防抖状态机与 `10 分钟` 空闲自动退出，避免后台挂起与孤儿进程。
+1. **巡检额度**：通道 B 跑 `& $py $cli usage --include-flow`（通道 A 查 `/usage` 与 Flow），Antigravity 环境顺便跑 `python "<inspect路径>"` 对比本地配额。
+2. **三阶段必问用户（优先用 `ask_question` / `AskUserQuestion`）**：
+   - **节点 1（开局定调）**：结合余额问清需求模糊点（技术栈/风格/交付边界）、确认模式 A/B 及选用编队；**若当前为通道 A 托底，须透明告知用户两选项利弊由其自选：“默认直接用日常 Chrome 托底（免重登、安全稳妥但多 Tab 往返略慢），若想 5~10 倍并发提速可由你同意后配置本地独立 Profile（需在新窗口登录一次）”**。
+   - **节点 2（花名册会审）**：展示拟开的员工角色列表、站点与分工，经用户点头后再批量并发点火。
+   - **节点 3（波次验收 & 沉淀确认）**：Wave 1 核心产出或主视觉落地后先请用户过目；新增永久编队（`playbook add`）前须征得用户同意。
 
 ---
 
-### 通道 B（CLI 备用）：Playwright CDP 脚本（支持三站 + `harvest` + 自动复用）
+## 三、 高速执行通道（禁止派 `browser` 子代理）
 
-> `ask` 默认已设为高优 **`task`** 模式（传 `--tool` 或 `--thinking` 时自动切 `chat`）；`ask` / `playground` 默认**复用当前会话**并保留原模型，开全新会话传 `--new-chat`。用 `setup_skill.py` 输出里的 `py` 和 `cli` 执行（完整参数查 `--help`）：
+### 通道 B（高速引擎，用户启用独立 Profile / 调试端口后自动选用）
+
+**核心原理**：所有切换、发包、多 Tab 并发等待与文件落盘全在本地 Python/CDP 进程内完成，**本地 AI 只需写 1 个 `waveN.json` 并执行 1 条命令**，即可把原本 400+ 次浏览器微操压缩为 **3~5 次 CLI 调用**！
 
 ```powershell
-# 额度巡检（默认精简 1 行）
-& $py $cli usage --include-flow
+# 0. 仅当用户主动选择提速并同意启用独立 Profile 时执行（首次需用户自己登录一次；日常已有可用通道时跳过）
+python $cli/../setup_skill.py --setup-ai-chrome --launch-ai-chrome
 
-# Gemini 高优异步 Task（默认 entry=task）& 回收结果直接落盘
-& $py $cli ask --model hydrogen --file "需求.pdf" --prompt "轻量原型/调研任务" --async-send
-& $py $cli fetch --out-file "result.md"
+# 1. 可选：启动常驻 daemon（自动连用户开启的 AI Chrome 9229，省冷启动，10 分钟空闲自动退）
+Start-Process -WindowStyle Hidden $py "$cli daemon"
 
-# AI Studio Playground（默认自动拉满 Extra High + 1048576；支持多模态与直写文件）
-& $py $cli playground --model hydrogen --system-file "设定.md" --file "参考.pdf" --prompt "写正文" --out-file "out.md" --new-chat
-& $py $cli playground --model research --prompt "深度调研" --out-file "research.md" --new-chat
-& $py $cli playground --model lyria --prompt "warm cozy solo piano, 100bpm" --download-dir "./out"
-& $py $cli playground --model tts --prompt "你好，欢迎光临！" --download-dir "./out"
+# 2. 单兵按角色调用（自动从 .web-team.json 绑定独立 Tab，支持 --title / --folder / --github / --unpack-json-dir）
+& $py $cli playground --role director --title "[MyApp] director" --model neon --thinking-level high --system-file "references/director_prompt.md" --prompt-file "./brief.txt" --out-file "./docs/plan.md"
+& $py $cli ask --role qa_tester --model neon --folder "./proj" --prompt "在 Debian 12 沙盒运行无头 Chromium 测完并输出 patch" --out-file "./docs/qa.md"
 
-# Google Flow（默认 x1 省点数）& AI Studio Build 整套工程（默认 MAX + Neon）
-& $py $cli flow --media image --model "Nano Banana 2.1" --aspect 16:9 --resolution 2K --prompt "提示词" --download-dir "./out"
-& $py $cli build --mode max --model neon --framework React --prompt "整套全栈需求" --download-dir "./out" --extract
+# 3. 核武器：单条 wave 命令并发起跑整批员工（自动开独立 Tab -> 并发发射 -> 后台静默等待 -> 自动解包/下载 -> 回写花名册）
+& $py $cli wave --spec "./proj/wave1.json" --roster-file "./proj/.web-team.json" --project-dir "./proj" --timeout 360
 
-# 通道 A 下载收割与 JSON 包自动拆包（不经本地 AI 上下文）
-& $py $cli harvest --pattern "bundle*.json" --unpack-json --dest "./out"
+# 4. 完工审计门禁（退出码 0 方可交差）
+python $cli roster audit --file "./proj/.web-team.json" --project-dir "./proj" --min-roles 2
 ```
+
+**`wave1.json` 极简示例（按需删减，一个对象 = 一个独立员工 Tab）：**
+```json
+{
+  "project": "MyApp",
+  "tasks": [
+    {"role": "engine_coder", "site": "aistudio", "model": "neon", "thinking_level": "high", "title": "[MyApp] engine_coder", "prompt": "...只输出纯 JSON {相对路径: 内容}", "unpack_json_dir": "."},
+    {"role": "sound_bgm", "site": "aistudio", "model": "lyria", "prompt": "dark ambient survival loop, 90bpm", "download_dir": "assets/audio", "save_as": "bgm.mp3"},
+    {"role": "concept_artist", "site": "flow", "model": "Nano Banana 2.1", "aspect": "16:9", "count": 1, "prompt": "apocalyptic shelter interior, charcoal style", "download_dir": "assets/images", "save_as": "bg_shelter.png"},
+    {"role": "qa_sandbox", "site": "gemini_task", "model": "hydrogen", "folder": ".", "prompt": "也可以从 Google Drive 读取 [MyApp] engine_coder 或检查导入目录，跑测试并汇报", "out_file": "docs/qa_report.md"}
+  ]
+}
+```
+> 其余单命令（`usage --include-flow`、`build`、`attach`、`harvest`、`playbook`）均支持 `--help` 查看完整参数。
+
+---
+
+### 通道 A（默认稳妥托底）：AgentLimb MCP — 4 步并发派单流水线
+
+> 直接复用日常 Chrome 已登录账号（无需另建窗口重登，安全透明）；当 `prefer=A` 时直接走本通道，完整四大渠道可复制 JS 宏与精确参数表见 [references/agentlimb.md](references/agentlimb.md)。
+
+1. **批量建房登记**：为每个员工各自 `tab_new` 并跑 `python $cli roster set --role <r> --tab-id <id>`。
+2. **并发点火**：连续对 Wave 1 所有角色 Tab 注入带 `window.__WEB_TEAM_ROLE` 锁的发包 JS（**不中途死等，让多 Tab 同时开工**；`javascript_eval` 参数必须用 `expression`，`wait` 参数必须用 `timeout`）。
+3. **激活收割落盘**：依次 `wait(condition="page_contains", text="Response ready.", timeout=30000)` → `tab_activate(tabId)` → 触发 `bundle-<role>.json` 或媒体下载 → `python $cli harvest --pattern "bundle-*.json,*.png,*.mp3,*.wav,*.zip" --unpack-json --dest "<项目>"`。
+4. **门禁验收 & 收尾**：跑 `roster audit` 通过并完成本地测试后，调用 `agentlimb:say` 释放侧边栏。
