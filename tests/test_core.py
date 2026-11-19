@@ -35,10 +35,16 @@ class TestGeminiWebCore(unittest.TestCase):
         self.assertEqual(gw._resolve_ask_entry("task", tool="Canvas"), "task")
 
     def test_model_resolution_and_short_name(self) -> None:
+        self.assertEqual(gw._resolve_aistudio_model_id("neon"), "gemini-4-neon")
+        self.assertEqual(gw._resolve_aistudio_model_id("4n"), "gemini-4-neon")
         self.assertEqual(gw._resolve_aistudio_model_id("hydrogen"), "gemini-4-hydrogen")
         self.assertEqual(gw._resolve_aistudio_model_id("argon"), "gemini-4-argon")
         self.assertEqual(gw._resolve_aistudio_model_id("lyria"), "lyria-3.5")
         self.assertEqual(gw._resolve_aistudio_model_id("tts"), "gemini-3.8-flash-tts")
+        self.assertEqual(gw.MODEL_OPTIONS["neon"][0], "bard-mode-option-e6fa609c3fa255c0")
+        self.assertEqual(gw.MODEL_OPTIONS["neon"][1], "Neon")
+        import inspect
+        self.assertEqual(inspect.signature(gw.execute_build).parameters["model"].default, "neon")
         self.assertEqual(
             gw._short_model_name("Gemini 4 Hydrogen gemini-4-hydrogen High speed model for everyday tasks"),
             "gemini-4-hydrogen",

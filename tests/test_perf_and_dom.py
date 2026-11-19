@@ -53,13 +53,13 @@ class TestInspectAntigravityBenchmarks(unittest.TestCase):
         if not INSPECT_SCRIPT.is_file():
             raise unittest.SkipTest(f"未找到目标脚本: {INSPECT_SCRIPT}")
 
-    def _run_inspect(self, *args: str) -> tuple[float, subprocess.CompletedProcess[str]]:
+    def _run_inspect(self, *args: str, timeout_sec: float = 15.0) -> tuple[float, subprocess.CompletedProcess[str]]:
         t0 = time.perf_counter()
         proc = subprocess.run(
             [sys.executable, str(INSPECT_SCRIPT), *args],
             capture_output=True,
             text=True,
-            timeout=15.0,
+            timeout=timeout_sec,
             errors="replace",
         )
         elapsed = time.perf_counter() - t0
@@ -102,8 +102,8 @@ class TestInspectAntigravityBenchmarks(unittest.TestCase):
         self.assertLess(elapsed, 1.0, f"--live-only 耗时 {elapsed:.3f}s 过高")
 
     def test_03_all_history_incremental_cache(self) -> None:
-        # 首次生成全量 DB 缓存
-        first_elapsed, _ = self._run_inspect("--markdown", "--all-history")
+        # 首次生成全量 DB 缓存（历史对话较大时允许最多 45s 建立初次缓存）
+        first_elapsed, _ = self._run_inspect("--markdown", "--all-history", timeout_sec=45.0)
         # 第二次增量复用：要求 < 1.2 秒（原版 > 17 秒）
         second_elapsed, _ = self._run_inspect("--markdown", "--all-history")
         print(

@@ -143,14 +143,16 @@ def _read_system_text(system_instruction: str, system_file: str) -> str:
     return "\n\n".join(part for part in parts if part)
 
 MODEL_OPTIONS = {
-    "flash-lite": ("bard-mode-option-8c46e95b1a07cecc", "Flash-Lite"),
-    "3.5": ("bard-mode-option-8c46e95b1a07cecc", "Flash-Lite"),
+    "auto": ("bard-mode-option-8c46e95b1a07cecc", "自动"),
+    "flash-lite": ("bard-mode-option-8c46e95b1a07cecc", "自动"),
     "hydrogen": ("bard-mode-option-56fdd199312815e2", "Hydrogen"),
     "4h": ("bard-mode-option-56fdd199312815e2", "Hydrogen"),
-    "pro": ("bard-mode-option-e6fa609c3fa255c0", "Pro"),
-    "3.1": ("bard-mode-option-e6fa609c3fa255c0", "Pro"),
-    "argon": ("bard-mode-option-argon", "Argon"),
-    "4a": ("bard-mode-option-argon", "Argon"),
+    "neon": ("bard-mode-option-e6fa609c3fa255c0", "Neon"),
+    "4n": ("bard-mode-option-e6fa609c3fa255c0", "Neon"),
+    # Web 端已将 Argon/Pro 槽位升级替换为 4 Neon，保留旧别名向后兼容
+    "argon": ("bard-mode-option-e6fa609c3fa255c0", "Neon"),
+    "4a": ("bard-mode-option-e6fa609c3fa255c0", "Neon"),
+    "pro": ("bard-mode-option-e6fa609c3fa255c0", "Neon"),
     "carbon": ("bard-mode-option-upsell_MODE_CATEGORY_ULTRA", "Carbon"),
     "4c": ("bard-mode-option-upsell_MODE_CATEGORY_ULTRA", "Carbon"),
 }
@@ -663,13 +665,21 @@ def execute_usage(browser) -> dict:
 
 
 AISTUDIO_MODEL_MAP = {
+    "neon": "Gemini 4 Neon",
+    "4n": "Gemini 4 Neon",
     "hydrogen": "Gemini 4 Hydrogen",
+    "4h": "Gemini 4 Hydrogen",
     "argon": "Gemini 4 Argon",
+    "4a": "Gemini 4 Argon",
 }
 
 _AISTUDIO_MODEL_IDS = {
+    "neon": "gemini-4-neon",
+    "4n": "gemini-4-neon",
     "hydrogen": "gemini-4-hydrogen",
+    "4h": "gemini-4-hydrogen",
     "argon": "gemini-4-argon",
+    "4a": "gemini-4-argon",
     "flash": "gemini-3.8-flash",
     "flash-lite": "gemini-3.5-flash-lite",
     "decision": "gemini-decision-1",
@@ -1523,7 +1533,12 @@ def _aistudio_build_configure(page, model: str = "", framework: str = "") -> Non
     if model:
         resolved = _resolve_aistudio_model_name(model)
         allow_paid = "paid" in model.lower()
-        fallback = "Gemini 4 Hydrogen" if not allow_paid and "argon" in resolved.lower() else ""
+        fallback = ""
+        if not allow_paid:
+            if "neon" in resolved.lower():
+                fallback = "Gemini 4 Argon"
+            elif "argon" in resolved.lower():
+                fallback = "Gemini 4 Hydrogen"
         _pick_mat_select(
             page.locator('mat-select[aria-label="Select the model for chat"]').first,
             resolved,
@@ -1596,7 +1611,7 @@ def execute_build(
     prompt: str = "",
     app_url: str = "",
     mode: str = "max",
-    model: str = "argon",
+    model: str = "neon",
     framework: str = "",
     download_dir: str = "",
     extract: bool = False,
@@ -2153,7 +2168,7 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
                         prompt=body.get("prompt", ""),
                         app_url=body.get("app_url", ""),
                         mode=body.get("mode", "max"),
-                        model=body.get("model", "argon"),
+                        model=body.get("model", "neon"),
                         framework=body.get("framework", ""),
                         download_dir=body.get("download_dir", ""),
                         extract=body.get("extract", False),
@@ -2363,7 +2378,7 @@ def main() -> None:
     p_ask = sub.add_parser("ask", help="在 gemini.google.com 发起异步任务或对话（默认 task 模式）")
     p_ask.add_argument("--prompt", "-p", required=True, help="提问或任务描述")
     p_ask.add_argument("--entry", choices=["", "chat", "task"], default="", help="入口: task(默认) | chat(对话；传 --tool/--thinking 时自动切 chat)")
-    p_ask.add_argument("--model", "-m", default="", help="模型: hydrogen(新会话默认) | argon | pro | flash-lite（复用会话不传则保持原模型）")
+    p_ask.add_argument("--model", "-m", default="", help="模型: hydrogen(新会话默认) | neon | carbon | auto（复用会话不传则保持原模型）")
     p_ask.add_argument("--tool", "-t", default=None, help="对话模式工具: Deep Research | Canvas | 制作图片 | 制作视频 | 制作音乐")
     p_ask.add_argument("--thinking", default=None, help="思考等级: 低 | 中 | 高")
     p_ask.add_argument("--file", dest="files", action="append", default=[], help="无弹窗上传本地附件（可多次传入）")
@@ -2395,7 +2410,7 @@ def main() -> None:
         "--model",
         "-m",
         default="",
-        help="模型别名或ID: hydrogen(新会话默认) | argon | nano2.1 | omni1.2 | lyria | tts | research 等（复用不传则保持原模型）",
+        help="模型别名或ID: hydrogen(新会话默认) | neon | argon | nano2.1 | omni1.2 | lyria | tts | research 等（复用不传则保持原模型）",
     )
     p_pg.add_argument("--system", default="", help="系统指令 (System Instructions)")
     p_pg.add_argument("--system-file", default="", help="从本地文件读取文本并写入 System Instructions（如世界观设定 .md/.txt）")
@@ -2425,7 +2440,7 @@ def main() -> None:
     p_build.add_argument("--prompt", "-p", default="", help="整套应用需求或修改指令（可省略以仅导出已有项目）")
     p_build.add_argument("--app-url", default="", help="已有 AI Studio Build 应用 URL（用于迭代或直接导出 ZIP）")
     p_build.add_argument("--mode", default="max", choices=["", "default", "plan", "max"], help="Build 模式: max(默认最高可用) | plan | default")
-    p_build.add_argument("--model", "-m", default="argon", help="聊天模型: argon(默认最高免费可用) | hydrogen")
+    p_build.add_argument("--model", "-m", default="neon", help="聊天模型: neon(默认最新非Paid最强) | argon | hydrogen")
     p_build.add_argument("--framework", default="", help="目标框架: React | Next.js | Angular | XR Blocks | Android")
     p_build.add_argument("--download-dir", default="", help="下载项目 ZIP 的本地目录")
     p_build.add_argument("--extract", action="store_true", help="下载 ZIP 后自动解压到同名目录")

@@ -1,6 +1,6 @@
 # AI Studio & Google Flow 全分类模型速查表
 
-> 本文档收录全部模型直达 `model-id`（含小众与 `Paid` 标记项）。日常主力模型（`gemini-4-hydrogen` / `gemini-4-argon` / `gemini-nano-banana-2.1` / `gemini-omni-1.2-flash` / `lyria-3.5` / `gemini-3.8-flash-tts` / `deep-research-preview-04-2026`）已内置于主 `SKILL.md`。
+> 本文档收录全部模型直达 `model-id`（含小众与 `Paid` 标记项，2026-11-19 实时核对）。日常主力模型（`gemini-4-neon` / `gemini-4-hydrogen` / `gemini-4-argon` / `gemini-nano-banana-2.1` / `gemini-omni-1.2-flash` / `lyria-3.5` / `gemini-3.8-flash-tts` / `deep-research-preview-04-2026`）已内置于主 `SKILL.md`。
 
 ## 1. AI Studio 全分类路由表
 
@@ -8,12 +8,13 @@
 
 | 分类 | 模型显示名 | 直达 `model-id` | 核心用途 / 特点 |
 | :--- | :--- | :--- | :--- |
-| **Gemini（推理/校验）** | `Gemini 4 Hydrogen` | `gemini-4-hydrogen` | 日常高频推理、Agentic 编码、1M 长输出默认主力 |
-| | `Gemini 4 Argon` | `gemini-4-argon` | 深度思考、复杂架构规划与高难代码分析 |
+| **Gemini（推理/校验）** | `Gemini 4 Neon` *(New)* | `gemini-4-neon` | 最新旗舰推理（11 月 19 日发布，未标 `Paid`，Thinking 支持 `Extra High`、输出 `1048576`；Web 端与 Build 同步上线并替换原 Web 端 Argon） |
+| | `Gemini 4 Hydrogen` *(New)* | `gemini-4-hydrogen` | 日常高频推理、Agentic 编码、1M 长输出默认主力 |
+| | `Gemini 4 Argon` | `gemini-4-argon` | 深度思考、复杂架构规划（Web 端已由 4 Neon 替代，Playground & Build 仍保留） |
 | | `Gemini 4 Carbon` *(Paid)* | `gemini-4-carbon` | 标记 `Paid`，长周期复杂研究/编码（未绑付费 Key 不可免费调用） |
 | | `Gemini 3.8 Flash` | `gemini-3.8-flash` | 强推理 Flash 模型 |
 | | `Gemini Decision 1` | `gemini-decision-1` | 极速校验与 Yes/No/Rubric 评分模型 |
-| | `Gemini 3.5 Flash Lite` / `3.1 Flash Lite` / `3.1 Pro Preview` / `3.6 Flash` / `3 Flash Preview` | `gemini-3.5-flash-lite` 等 | 常规轻量或上一代多模态推理 |
+| | `Gemini 3.5 Flash Lite` / `3.1 Flash Lite` / `3.1 Pro Preview` / `3.6 Flash` / `3 Flash Preview` | `gemini-3.5-flash-lite` / `gemini-pro-latest` 等 | 常规轻量或上一代多模态推理（含 `gemini-flash-latest`、`gemini-flash-lite-latest` 别名） |
 | | `Gemini Robotics-ER 2` / `Streaming` | `gemini-robotics-er-2-preview` | 空间与视频时序推理 |
 | **Images（生图改图）** | `Nano Banana 2.1` | `gemini-nano-banana-2.1` | 最新原生生图/多轮一致改图，支持 Search & Image Search 接地 |
 | | `Nano Banana Pro` / `2` / `2 Lite` / `Nano Banana` | `gemini-3-pro-image` / `gemini-3.1-flash-image` / `gemini-3.1-flash-lite-image` / `gemini-2.5-flash-image` | 高画质或轻量批量出图 |
