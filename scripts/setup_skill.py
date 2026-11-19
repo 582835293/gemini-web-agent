@@ -24,10 +24,14 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-import venv
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import platform_utils  # noqa: E402
 
 SKILL_NAME = "gemini-web-agent"
 REPO_SLUG = "582835293/gemini-web-agent"
@@ -91,24 +95,13 @@ def venv_python_path(skill_dir: Path) -> Path:
 
 
 def ensure_venv_and_deps(skill_dir: Path, skip_pip: bool = False) -> dict:
-    """确保 .venv 存在并安装了 playwright；缺 python3-venv 时给出清晰系统安装指引。"""
+    """确保 .venv 存在并安装了 playwright；缺 ensurepip 时自动尝试 virtualenv 兜底并按发行版给提示。"""
     py = venv_python_path(skill_dir)
     created_venv = False
-    venv_error = ""
     if not py.exists():
         venv_dir = skill_dir / ".venv"
-        try:
-            venv.EnvBuilder(with_pip=True).create(str(venv_dir))
-            created_venv = True
-        except Exception as e:
-            if venv_dir.exists():
-                shutil.rmtree(venv_dir, ignore_errors=True)
-            hint = (
-                "Linux/Ubuntu 缺少 venv/ensurepip 模块，请先执行: sudo apt update && sudo apt install -y python3-venv"
-                if platform.system().lower() == "linux"
-                else "请确认当前 Python 已包含 venv 与 pip 模块"
-            )
-            venv_error = f"创建 .venv 失败: {e}（{hint}）"
+        ok_venv, venv_error = platform_utils.create_python_venv(venv_dir, sys.executable)
+        if not ok_venv:
             return {
                 "venv_python": str(py),
                 "venv_created": False,
@@ -116,6 +109,7 @@ def ensure_venv_and_deps(skill_dir: Path, skip_pip: bool = False) -> dict:
                 "installed_now": False,
                 "pip_error": venv_error,
             }
+        created_venv = True
 
     def check_imports() -> bool:
         proc = subprocess.run(
@@ -246,34 +240,10 @@ def _probe_cdp_http(port: str, timeout_sec: float = 1.5) -> dict | None:
 
 
 def detect_chrome_cdp() -> dict:
-    """检测本机 Chrome 可执行路径、DevToolsActivePort 状态与实际 HTTP/WS 就绪模式。"""
-    sys_name = platform.system().lower()
-    active_ports = []
-    chrome_bins = []
-
-    if sys_name.startswith("win"):
-        local_app = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        active_ports.append(local_app / "Google" / "Chrome" / "User Data" / "DevToolsActivePort")
-        chrome_bins.extend([
-            Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-            Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-            local_app / "Google" / "Chrome" / "Application" / "chrome.exe",
-        ])
-    elif sys_name == "darwin":
-        active_ports.append(Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "DevToolsActivePort")
-        chrome_bins.append(Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
-    else:
-        xdg_cfg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        active_ports.extend([
-            xdg_cfg / "google-chrome" / "DevToolsActivePort",
-            xdg_cfg / "google-chrome-beta" / "DevToolsActivePort",
-            xdg_cfg / "chromium" / "DevToolsActivePort",
-            xdg_cfg / "microsoft-edge" / "DevToolsActivePort",
-        ])
-        for cmd in ("google-chrome", "chromium", "chromium-browser", "microsoft-edge"):
-            which = shutil.which(cmd)
-            if which:
-                chrome_bins.append(Path(which))
+    """跨平台检测本机 Chromium 系浏览器（Chrome/Chromium/Edge/Brave + Snap/Flatpak）、DevToolsActivePort 与实际就绪模式。"""
+    active_ports = platform_utils.iter_devtools_active_port_files()
+    chrome_bins = platform_utils.detect_chromium_executables()
+    default_browser = platform_utils.detect_default_browser()
 
     cdp_ws_url = None
     active_port_file = None
@@ -294,7 +264,7 @@ def detect_chrome_cdp() -> dict:
                     cdp_mode = "chrome_ui_approval_required"
                 break
 
-    found_chrome = next((str(p) for p in chrome_bins if p.exists()), None)
+    found_chrome = chrome_bins[0] if chrome_bins else None
     return {
         "cdp_active": cdp_ws_url is not None,
         "cdp_http_ready": cdp_http_ready,
@@ -302,6 +272,13 @@ def detect_chrome_cdp() -> dict:
         "active_port_file": active_port_file,
         "cdp_ws_url": cdp_ws_url,
         "chrome_executable": found_chrome,
+        "available_chromium_browsers": chrome_bins,
+        "default_browser": default_browser or None,
+        "firefox_default_note": (
+            "检测到系统默认浏览器为 Firefox；AgentLimb 与 Playwright CDP 依赖 Chromium 内核（Chrome/Edge/Brave/Chromium），不影响直接使用已安装的 Chromium 系浏览器。"
+            if "firefox" in default_browser
+            else None
+        ),
     }
 
 
@@ -560,6 +537,8 @@ def main() -> None:
             f"请检查网络并手动执行: \"{venv_info['venv_python']}\" -m pip install -r \"{target_dir / 'requirements.txt'}\""
         )
     if not agentlimb_info["configured"] and not cdp_info["cdp_active"]:
+        if cdp_info.get("firefox_default_note"):
+            next_actions.append(cdp_info["firefox_default_note"])
         next_actions.append(
             "未检测到 AgentLimb MCP 与已开启的 Chrome 远程调试端口。强烈推荐首选方案 (1)："
             " (1) 安装并启用 AgentLimb 扩展 MCP >= v0.8.2（https://github.com/hooosberg/AgentLimb ，"

@@ -23,6 +23,7 @@ if "playwright" not in sys.modules:
 
 import gemini_web as gw  # noqa: E402
 import inspect_antigravity as ia  # noqa: E402
+import platform_utils as pu  # noqa: E402
 import setup_skill as ss  # noqa: E402
 
 
@@ -168,6 +169,164 @@ class TestSetupAndInspect(unittest.TestCase):
         self.assertGreaterEqual(sig.parameters["timeout_ms"].default, 45000)
         cdp = ss.detect_chrome_cdp()
         self.assertIn("cdp_mode", cdp)
+        self.assertIn("available_chromium_browsers", cdp)
+
+
+class TestLinuxDistroAndProcDecoupling(unittest.TestCase):
+    def test_chromium_family_linux_xdg_snap_flatpak(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            xdg = home / ".custom_cfg"
+            paths = pu.iter_devtools_active_port_files(
+                sys_name="Linux",
+                home=home,
+                env={"XDG_CONFIG_HOME": str(xdg)},
+            )
+            path_strs = [str(p).replace("\\", "/") for p in paths]
+            self.assertTrue(any(p.endswith(".custom_cfg/google-chrome/DevToolsActivePort") for p in path_strs))
+            self.assertTrue(any(p.endswith(".custom_cfg/microsoft-edge/DevToolsActivePort") for p in path_strs))
+            self.assertTrue(any(p.endswith(".custom_cfg/BraveSoftware/Brave-Browser/DevToolsActivePort") for p in path_strs))
+            self.assertTrue(any("snap/chromium/common/chromium/DevToolsActivePort" in p for p in path_strs))
+            self.assertTrue(any(".var/app/com.google.Chrome/config/google-chrome/DevToolsActivePort" in p for p in path_strs))
+
+    def test_linux_distro_package_hints(self) -> None:
+        self.assertIn("apt install", pu.linux_venv_install_hint('ID=ubuntu\nID_LIKE=debian\n'))
+        self.assertIn("dnf install", pu.linux_venv_install_hint('ID=fedora\n'))
+        self.assertIn("pacman -S", pu.linux_venv_install_hint('ID=manjaro\nID_LIKE=arch\n'))
+        self.assertIn("zypper install", pu.linux_venv_install_hint('ID="opensuse-tumbleweed"\nID_LIKE="opensuse suse"\n'))
+        self.assertIn("apk add", pu.linux_venv_install_hint('ID=alpine\n'))
+
+    def test_parse_proc_net_tcp_and_mock_proc_tree(self) -> None:
+        tcp_lines = [
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+            "   0: 0100007F:9731 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 54321 1 00000000 100 0 0 10 0",
+            "   1: 0100007F:0050 00000000:0000 01 00000000:00000000 00:00000000 00000000  1000        0 99999 1 00000000 100 0 0 10 0",
+        ]
+        mapping = pu.parse_proc_net_tcp_lines(tcp_lines)
+        self.assertEqual(mapping.get("54321"), 0x9731)  # 0x9731 == 38705
+        self.assertNotIn("99999", mapping)  # 状态 01 (ESTABLISHED) 不计入 LISTEN
+
+        with tempfile.TemporaryDirectory() as td:
+            proc_root = Path(td)
+            (proc_root / "net").mkdir()
+            (proc_root / "net" / "tcp").write_text("\n".join(tcp_lines), encoding="utf-8")
+            pdir = proc_root / "4242"
+            pdir.mkdir()
+            (pdir / "cmdline").write_bytes(b"/opt/agy/language_server\x00--standalone\x00--csrf_token=tok123\x00")
+            fd_dir = pdir / "fd"
+            fd_dir.mkdir()
+            fd_sock = fd_dir / "7"
+            fd_sock.write_text("", encoding="utf-8")
+            fd_other = fd_dir / "8"
+            fd_other.write_text("", encoding="utf-8")
+
+            from unittest.mock import patch
+
+            def _fake_readlink(path_obj):
+                p_str = str(path_obj).replace("\\", "/")
+                if p_str.endswith("/4242/exe"):
+                    return "/opt/agy/language_server"
+                if p_str.endswith("/4242/fd/7"):
+                    return "socket:[54321]"
+                if p_str.endswith("/4242/fd/8"):
+                    return "pipe:[11111]"
+                raise OSError("not a symlink")
+
+            with patch("platform_utils.os.readlink", side_effect=_fake_readlink):
+                cands = pu.find_linux_servers_via_proc(proc_root=proc_root)
+            self.assertEqual(len(cands), 1)
+            self.assertEqual(cands[0]["pid"], 4242)
+            self.assertEqual(cands[0]["exe"], "/opt/agy/language_server")
+            self.assertEqual(cands[0]["ports"], [0x9731])
+            self.assertEqual(cands[0]["score"], 100)
+
+    def test_inspect_incremental_db_cache_equivalence(self) -> None:
+        """验证 inspect_antigravity v2 预聚合缓存与 SQLite 只追加增量解析与全量结果完全一致。"""
+        import sqlite3
+
+        def _enc_varint(val: int) -> bytes:
+            out = bytearray()
+            while True:
+                b = val & 0x7F
+                val >>= 7
+                if val:
+                    out.append(b | 0x80)
+                else:
+                    out.append(b)
+                    break
+            return bytes(out)
+
+        def _enc_field_varint(fnum: int, val: int) -> bytes:
+            return _enc_varint((fnum << 3) | 0) + _enc_varint(val)
+
+        def _enc_field_bytes(fnum: int, payload: bytes) -> bytes:
+            return _enc_varint((fnum << 3) | 2) + _enc_varint(len(payload)) + payload
+
+        def _make_gen_blob(inp: int, out_t: int, cached: int, thinking: int, model_name: str) -> bytes:
+            usage = (
+                _enc_field_varint(2, inp)
+                + _enc_field_varint(3, out_t)
+                + _enc_field_varint(5, cached)
+                + _enc_field_varint(10, thinking)
+            )
+            sub1 = _enc_field_bytes(4, usage)
+            top = _enc_field_bytes(1, sub1)
+            telemetry = b"\x00model_enum\x00" + model_name.encode("ascii") + b"\x00"
+            return top + telemetry
+
+        def _make_step_meta(ts: int) -> bytes:
+            return _enc_field_bytes(1, _enc_field_varint(1, ts))
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "sess_test.db"
+            con = sqlite3.connect(str(db_path))
+            con.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB, metadata BLOB)")
+            con.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+            con.execute(
+                "INSERT INTO steps VALUES (?, ?, ?, ?)",
+                (1, 14, b"<USER_REQUEST>\nHello\n</USER_REQUEST>", _make_step_meta(1763510400)),
+            )
+            con.execute(
+                "INSERT INTO gen_metadata VALUES (?, ?)",
+                (1, _make_gen_blob(1000, 200, 500, 50, "gemini-4-neon")),
+            )
+            con.commit()
+
+            st1 = db_path.stat()
+            parsed1, changed1 = ia._parse_single_db(str(db_path), None, st1.st_mtime, st1.st_size)
+            self.assertTrue(changed1)
+            self.assertIsNotNone(parsed1)
+            self.assertEqual(parsed1["sess_turns"], 1)
+            self.assertEqual(parsed1["last_routed_model"], "gemini-4-neon")
+
+            cached_entry = {
+                "v": ia.DB_CACHE_SCHEMA_VERSION,
+                "mtime": st1.st_mtime,
+                "size": st1.st_size,
+                "data": parsed1,
+            }
+
+            # 追加第 2 轮（不同模型），验证增量更新与无缓存全量解析完全一致
+            con.execute(
+                "INSERT INTO steps VALUES (?, ?, ?, ?)",
+                (2, 14, b"next turn", _make_step_meta(1763510460)),
+            )
+            con.execute(
+                "INSERT INTO gen_metadata VALUES (?, ?)",
+                (2, _make_gen_blob(2000, 300, 4000, 80, "gemini-4-hydrogen")),
+            )
+            con.commit()
+            con.close()
+
+            st2 = db_path.stat()
+            parsed_inc, changed_inc = ia._parse_single_db(str(db_path), cached_entry, st2.st_mtime, st2.st_size)
+            parsed_full, _ = ia._parse_single_db(str(db_path), None, st2.st_mtime, st2.st_size)
+            self.assertTrue(changed_inc)
+            self.assertEqual(parsed_inc, parsed_full)
+            self.assertEqual(parsed_inc["sess_turns"], 2)
+            self.assertEqual(parsed_inc["sess_total"], (1000 + 500 + 200) + (2000 + 4000 + 300))
+            self.assertEqual(parsed_inc["last_routed_model"], "gemini-4-hydrogen")
+            self.assertEqual(len(parsed_inc["route_transitions"]), 2)
 
 
 if __name__ == "__main__":

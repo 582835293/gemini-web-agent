@@ -65,11 +65,13 @@ gemini-web-agent/
 │   ├── agentlimb.md          # AgentLimb MCP 日常备忘、防冻结落盘与参考图连招
 │   └── models.md             # AI Studio & Google Flow 全分类模型速查表
 ├── scripts/
-│   ├── setup_skill.py        # AI 一键自动安装、建 .venv 与通道自检脚本
+│   ├── setup_skill.py        # AI 一键自动安装、建 .venv 与跨平台通道自检脚本
+│   ├── platform_utils.py     # 跨发行版 Linux /proc 端口探测、venv 兜底与 Chromium 家族注册表
 │   ├── gemini_web.py         # Playwright CDP 备用全功能 CLI + 下载归档工具
 │   └── inspect_antigravity.py # 内置 Antigravity 本地双轨配额、后端路由与 Token 消耗检测脚本
 ├── tests/
-│   └── test_core.py          # 纯标准库离线冒烟测试（模型解析/行协议/harvest/版本缓存）
+│   ├── test_core.py          # 纯标准库离线冒烟测试（模型/行协议/harvest/跨发行版与/proc）
+│   └── test_perf_and_dom.py  # inspect 耗时基准测试与 Node DOM 状态机测试
 ├── requirements.txt          # Python 依赖（playwright）
 └── README.md
 ```

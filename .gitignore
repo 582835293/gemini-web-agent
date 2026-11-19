@@ -13,3 +13,4 @@ Thumbs.db
 *.jpeg
 *.zip
 *.log
+.skill_version.json

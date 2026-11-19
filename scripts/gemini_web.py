@@ -159,42 +159,29 @@ MODEL_OPTIONS = {
 
 
 def _iter_devtools_active_port_files() -> list[Path]:
-    """返回当前平台可能存在 Chrome DevToolsActivePort 的路径列表。"""
-    home = Path.home()
-    sys_name = platform.system().lower()
-    if sys_name.startswith("win"):
-        local_app = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
-        return [
-            local_app / "Google" / "Chrome" / "User Data" / "DevToolsActivePort",
-            local_app / "Google" / "Chrome Beta" / "User Data" / "DevToolsActivePort",
-            local_app / "Microsoft" / "Edge" / "User Data" / "DevToolsActivePort",
-        ]
-    if sys_name == "darwin":
-        support = home / "Library" / "Application Support"
-        return [
-            support / "Google" / "Chrome" / "DevToolsActivePort",
-            support / "Google" / "Chrome Beta" / "DevToolsActivePort",
-            support / "Microsoft Edge" / "DevToolsActivePort",
-        ]
-    cfg = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
-    return [
-        cfg / "google-chrome" / "DevToolsActivePort",
-        cfg / "chromium" / "DevToolsActivePort",
-        cfg / "microsoft-edge" / "DevToolsActivePort",
-    ]
+    """返回当前平台所有 Chromium 系浏览器可能的 DevToolsActivePort 路径。"""
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import platform_utils
+    return platform_utils.iter_devtools_active_port_files()
 
 
 def get_cdp_ws_url(port_override: int | None = None) -> str:
-    """跨平台从 Chrome User Data 的 DevToolsActivePort 读取 WebSocket CDP 地址。"""
+    """跨平台从 Chrome / Chromium / Edge / Brave 的 DevToolsActivePort 读取 WebSocket CDP 地址。"""
     for active_port_file in _iter_devtools_active_port_files():
         if active_port_file.exists():
-            lines = [line.strip() for line in active_port_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            lines = [
+                line.strip()
+                for line in active_port_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+                if line.strip()
+            ]
             if len(lines) >= 2:
                 port = port_override or int(lines[0])
                 return f"ws://127.0.0.1:{port}{lines[1]}"
     if port_override:
         return f"http://127.0.0.1:{port_override}"
-    raise RuntimeError("未找到 DevToolsActivePort，请先在 Chrome 开启远程调试或使用 AgentLimb MCP。")
+    raise RuntimeError("未找到 DevToolsActivePort，请先在 Chromium 系浏览器开启远程调试或使用 AgentLimb MCP。")
 
 
 def wait_gemini_ready(page, timeout_ms: int = 45000) -> None:
