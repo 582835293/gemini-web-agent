@@ -164,6 +164,12 @@ python .\scripts\inspect_antigravity.py   # 仅 Antigravity 环境按需对比�
 
 ---
 
+## 社区生态与衍生项目 / Community Ecosystem
+
+- **[dsh-gemini-web](https://github.com/stJL/dsh-gemini-web)**（by [@stJL](https://github.com/stJL)）：基于本项目的 **DeepSeek Harness (DSH)** 桌面插件，提供了可视化 GUI 设置仪表盘、Python 直连 AgentLimb RPC、确定性「先问后用」确认卡、多阶模型降级梯队以及网格拼图切图工具。
+
+---
+
 ## 隐私与安全说明 / Privacy & Security
 
 - 本 Skill **不收集、不上传任何账号凭证**，所有网页交互均在你本地已登录的 Google Chrome 会话中完成。
