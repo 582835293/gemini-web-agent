@@ -3,7 +3,7 @@ name: gemini-web-agent
 description: >-
   将本地配额留给核心决策，把海量生成、沙盒研发与多模态重活全部外包给外部 Chrome 员工标签页（默认以 AgentLimb 复用日常 Chrome 为免重登稳妥托底，若用户已启用独立 Profile / CDP 则自动切换高速通道 B `wave` 并发引擎；兼顾双模自适应总监 + Google Drive 云端共享总线 + Import Code + 审计门禁）：
   (1) aistudio.google.com Playground (key_off 免费纯文本大脑：总监/架构/审稿/文案，自动存 Google Drive 供下游 Task 直接拉取；按快慢调 minimal/low/medium/high/extra_high；另有 Lyria 3.5 配乐、3.8 Flash TTS 配音、Omni 1.2 视频、Nano Banana 2.1 生图)；
-  (2) gemini.google.com/app 专注 `任务 (Task)`（自带 Debian 12 断网沙盒 + 预装 python3/node/gcc/ffmpeg/libreoffice/chromium/PIL/cv2/pandas/pydub；支持 Google Drive 读取与 More uploads -> Import code 导入本地文件夹/GitHub 仓库）；
+  (2) gemini.google.com/app 专注 `任务 (Task)`（自带 Debian 12 云端 Linux 主机：预装 python3/node/gcc/ffmpeg/libreoffice/chromium/PIL/cv2/pandas/pydub；在 `gemini.google.com/gemini-spark` 开启“允许远程计算机访问网络”后可联网装包/调 API 独立完活，支持 Google Drive 读取与 More uploads -> Import code 导入本地文件夹/GitHub 仓库）；
   (3) aistudio.google.com/apps Build（整站外包团队：MAX + 4 Neon，必带防擅自加料契约）；
   (4) flow.google.com 独立点数池（Nano Banana 2.1 生图 0 点数 + x1 + 2K）。
   当用户提到“网页端 Gemini”、“Google Flow”、“Flow”、“AI Studio”、“Playground”、“Build模式”、“Lyria”、“TTS配音”、“生图”、“生视频”、“生音乐”、“利用网页版额度”、“省额度”、“任务模式”、“异步 agent”、“多标签页协作/分角色团队”时激活。
@@ -14,7 +14,7 @@ description: >-
 > **【防偷懒与防串台四条死令（违者视为任务彻底失败）】**
 > 1. **严禁多个角色共用同一个标签页/会话**：通道 B 必须通过 `wave` 或 `--role <role>` 自动分配独立 Tab（CLI 内置 `ROLE_URL_CONFLICT` 拦截）；通道 A 必须对每个新角色调用 `tab_new` + `roster set --tab-id`（CLI `ROLE_TAB_CONFLICT` + JS `window.__WEB_TEAM_ROLE` 双重拦截）。
 > 2. **模式 B 下严禁本地 `write_file` 编写业务源码，严禁用 Canvas 几何块或 WebAudio 振荡器伪造替代 Flow/Lyria/TTS 资产**：所有外包代码必须由网页员工产出并经 `wave --unpack-json-dir` 或 `harvest --unpack-json` 落盘；美术/音频必须真实生成下载入 `assets/`（模式 A 本地强模型也严禁手写万字或手抄大产物）。
-> 3. **通道选择与用户知情自选 + 防风控节流原则**：先看 `setup_skill.py` 输出——若用户已自备且运行了 `prefer=B`，使用高速通道 B (`gemini_web.py wave` 默认带 `3.5s` 拟人错峰与新页水合停顿，严禁 `--stagger 0` 疯狂连刷防风控)；若仅 `prefer=A`，优先稳妥走 AgentLimb 托底（禁 `read_page`/`form_input`/`computer`，`javascript_eval` 用 `expression`，`wait` 用 `timeout`，每次操作后留自然间隔），**绝不未征得用户同意擅自拉起需重新登录的新 Chrome 窗口！**
+> 3. **通道选择与用户知情自选 + 防风控节流原则**：先看 `setup_skill.py` 输出——若为 `prefer=B` 或 **`prefer=B_autostart`（用户已配好 `~/.gemini-web-chrome` 只是当前未运行）**，可直接拉起 `--launch-ai-chrome`（或直接调 `gemini_web.py` 自动拉起 `9229`）走高速通道 B (`gemini_web.py wave` 默认带 `3.5s` 拟人错峰与新页水合停顿，严禁 `--stagger 0` 疯狂连刷防风控)；若仅 `prefer=A`，稳妥走 AgentLimb 托底（禁 `read_page`/`form_input`/`computer` 轮询，`javascript_eval` 用 `expression`，`wait` 用 `timeout`，每次操作后留自然间隔），**绝不未征得用户同意首次运行 `--setup-ai-chrome` 新建需重登的 Profile！**
 > 4. **完工交差前必跑 `roster audit` 门禁**：交付前必须运行 `python scripts/gemini_web.py roster audit --file "<项目>/.web-team.json" --project-dir "<项目>"`，返回 `ok | audit=passed` 方可验收；出现 `MISSING_FLOW_IMAGES` / `MISSING_AUDIO_FILES` / `DUPLICATE_TAB_ID` / `DUPLICATE_SESSION_URL` 必须立刻补齐真实外包！
 
 ---
@@ -29,7 +29,7 @@ description: >-
 2. **【通道说明与选择权交给用户（防“盗号”误解）】**：
    - **默认免重登托底首选（通道 A：AgentLimb MCP）**：直接复用你正在用的日常 Chrome 已登录账号，无需新建目录、无需重新输入 Google 账号密码，开箱稳妥；适合常规需求，但受浏览器原子通信限制，多波次并发时本地往返次数较多、整体较慢。
    - **高速并发可选方案（通道 B：独立 AI Chrome Profile，`--setup-ai-chrome --launch-ai-chrome`）**：如你想用 `gemini_web.py wave` 单条命令并发跑完多 Tab（提速 5~10 倍、省 80%+ 本地 Token），可**自主选择**在本机新建一个与日常 Chrome 彻底隔离的专用目录（`~/.gemini-web-chrome` + 端口 `9229`）。**需要你本人明确同意后才创建，并在该新窗口自己登录一次 Google 账号**（开源脚本纯本地运行，绝不触碰日常 `User Data`、绝不收集或上传任何账号凭证）。也可在日常 Chrome 地址栏开启 `chrome://inspect/#remote-debugging` 后按弹窗允许免重登直连通道 B。
-3. **【绝对红线】严禁 `taskkill` 强杀正在运行的日常 Chrome，严禁篡改或复制默认 `User Data`；严禁未征求用户同意擅自执行 `--setup-ai-chrome --launch-ai-chrome`！**
+3. **【绝对红线】严禁 `taskkill` 强杀正在运行的日常 Chrome，严禁篡改或复制默认 `User Data`；严禁未征求用户同意首次运行 `--setup-ai-chrome` 新建需重登的目录（但若用户已配置过 `~/.gemini-web-chrome`，离线时可直接 `--launch-ai-chrome` 自动拉起，无需反复询问）！**
 
 ---
 
@@ -41,7 +41,7 @@ description: >-
 | 部门渠道 | 定位与分工 | 关键参数 / 能力边界（务必写入工单） |
 | :--- | :--- | :--- |
 | **AI Studio Playground**<br>(`/prompts/new_chat?model=<id>`, `key_off`) | **纯文本大脑组**（`4 Neon` / 快手 `4 Hydrogen` / `deep-research-preview-04-2026`） | **Thinking Level 调速**：快活 `low`/`medium`；常规研发 `high`；复杂架构 `extra_high`。Output 拉 `1048576`；代码要求输出单个 JSON `{相对路径: 内容}`（通道 B 传 `unpack_json_dir` 自动解包落盘）。**传 `--title "[项目] 角色"` 同步命名到 Google Drive**。 |
-| **Gemini Web `任务 (Task)`**<br>(`gemini.google.com/app`, 弃用 Web 聊天) | **带 Linux 电脑的实战员工**（主程/自测用 **`4 Neon`**；后期/清洗用 **`4 Hydrogen`**） | **Debian 12 沙盒（2C / 7.8G / 19G，跨轮持久化）**：预装 `python3 3.11`、`node 18`、`gcc 12`、`git`、`ffmpeg 5.1`、`libreoffice 7.4`、`chromium 156`、`PIL`、`cv2`、`pydub`、`pandas`、`matplotlib`。<br>**硬限制**：① **完全断网**（禁 `pip/npm install`）；② 无 `zip` CLI（须用 **Python `zipfile`** 打包）。 |
+| **Gemini Web `任务 (Task)`**<br>(`gemini.google.com/app`, 弃用 Web 聊天) | **云端 Linux 主机实战员工**（主程/自测用 **`4 Neon`**；后期/清洗用 **`4 Hydrogen`**） | **Debian 12 云主机（2C / 7.8G / 19G，跨任务持久化）**：预装 `python3 3.11`、`node 18`、`gcc 12`、`git`、`ffmpeg 5.1`、`libreoffice 7.4`、`chromium 156`、`PIL`、`cv2`、`pydub`、`pandas`、`matplotlib`。<br>**网络开关（`gemini.google.com/gemini-spark`）**：开启“允许远程计算机访问网络”即可联网 `pip/npm install` 与调外部 API 独立跑通重活（**安全红线：联网状态下所有任务共用该远程主机，严禁传入 API Key、私钥或敏感机密数据**；关闭开关则退回离线沙盒）；无 `zip` CLI（须用 **Python `zipfile`** 打包）。 |
 | **AI Studio Build** (`/apps`) | **整包外包公司**（仅从零建整站 Web） | 选 `MAX` + `Gemini 4 Neon`，工单必附《防擅自加料契约》锁定文件清单与接口。 |
 | **Flow + AI Studio 音频台** | **零成本素材工厂**（再可交 Task 后期） | 生图走 **`flow.google.com`**（`Nano Banana 2.1`，0 点数 `x1`，下 `1K/2K`）；音乐 `/new_music?model=lyria-3.5`；配音 `/generate-speech?model=gemini-3.8-flash-tts`；视频 `gemini-omni-1.2-flash`。 |
 
@@ -55,9 +55,13 @@ description: >-
 
 ## 二、 多端额度感知与三阶段互动拍板
 
-1. **巡检额度**：通道 B 跑 `& $py $cli usage --include-flow`（通道 A 查 `/usage` 与 Flow），Antigravity 环境顺便跑 `python "<inspect路径>"` 对比本地配额。
-2. **三阶段必问用户（优先用 `ask_question` / `AskUserQuestion`）**：
-   - **节点 1（开局定调）**：结合余额问清需求模糊点（技术栈/风格/交付边界）、确认模式 A/B 及选用编队；**若当前为通道 A 托底，须透明告知用户两选项利弊由其自选：“默认直接用日常 Chrome 托底（免重登、安全稳妥但多 Tab 往返略慢），若想 5~10 倍并发提速可由你同意后配置本地独立 Profile（需在新窗口登录一次）”**。
+1. **巡检额度与云主机开关**：通道 B 跑 `& $py $cli doctor`（或 `usage --include-flow` 与 `task-net status`；通道 A 查 `/usage`、`gemini-spark` 与 Flow），Antigravity 环境顺便跑 `python "<inspect路径>"` 对比本地配额。
+2. **单端额度/服务不可用时主动切换建议（防在已挂频道死磕）**：
+   - 若 **AI Studio 暂不可用 / 报 `503` / `isn't available right now`**：立即向用户说明，建议改用 **Gemini Web（`任务 (Task)` / `Chat` 独立 Pro 额度池）** 或切回本地客户端剩余额度；
+   - 若 **Gemini Web `/usage` 接近 100% / 限流**：建议把纯文本/代码/Audio 转分流至 **AI Studio `key_off`** 或本地模型；
+   - 若 **Flow 点数归零**：建议生图/生视频切换至 **AI Studio `Nano Banana 2.1` / `Omni 1.2 Flash`**（`key_off` 独立额度）。
+3. **三阶段必问用户（优先用 `ask_question` / `AskUserQuestion`）**：
+   - **节点 1（开局定调）**：结合余额问清需求模糊点（技术栈/风格/交付边界）、确认模式 A/B 及选用编队；**若检测 `gemini-spark` 远程计算机网络访问未开启（或当前任务需装包/联网），提醒用户可到 `https://gemini.google.com/gemini-spark` 开启（或经同意跑 `task-net enable`）把它当作联网云端 Linux 主机使用（同时提示勿向 Task 传 API Key/敏感凭证）**；若当前为通道 A 托底，须透明告知两通道利弊由其自选：“默认复用日常 Chrome（免重登稳妥），若想 5~10 倍并发提速可由你同意后配置独立 Profile（需在新窗口自登一次）”。
    - **节点 2（花名册会审）**：展示拟开的员工角色列表、站点与分工，经用户点头后再批量并发点火。
    - **节点 3（波次验收 & 沉淀确认）**：Wave 1 核心产出或主视觉落地后先请用户过目；新增永久编队（`playbook add`）前须征得用户同意。
 
@@ -80,12 +84,18 @@ Start-Process -WindowStyle Hidden $py "$cli daemon"
 & $py $cli playground --role director --title "[MyApp] director" --model neon --thinking-level high --system-file "references/director_prompt.md" --prompt-file "./brief.txt" --out-file "./docs/plan.md"
 & $py $cli ask --role qa_tester --model neon --folder "./proj" --prompt "在 Debian 12 沙盒运行无头 Chromium 测完并输出 patch" --out-file "./docs/qa.md"
 
-# 3. 核武器：单条 wave 命令并发起跑整批员工（自动开独立 Tab -> 并发发射 -> 后台静默等待 -> 自动解包/下载 -> 回写花名册）
+# 3. 核武器：单条 wave 命令并发起跑整批员工（自动开独立 Tab -> 并发发射 -> 后台静默等待 -> 自动解包/下载 -> 回写花名册；断流/503 支持 --resume 断点续传）
 & $py $cli wave --spec "./proj/wave1.json" --roster-file "./proj/.web-team.json" --project-dir "./proj" --timeout 360
+& $py $cli wave --spec "./proj/wave1.json" --roster-file "./proj/.web-team.json" --project-dir "./proj" --resume
 
-# 4. 完工审计门禁（退出码 0 方可交差）
+# 4. 一站式体检 & 云 Linux 网络开关（默认自动检查；--enable 仅在用户明确允许下执行）
+& $py $cli doctor
+& $py $cli task-net status
+
+# 5. 完工审计门禁（退出码 0 方可交差）
 python $cli roster audit --file "./proj/.web-team.json" --project-dir "./proj" --min-roles 2
 ```
+> 其余单命令（`usage --include-flow`、`build`、`attach`、`harvest`、`playbook`、`mcp` 原生 stdio Server 模式；Playground 支持 `--fallback-model auto` 遇 503 拥堵自动退避降级）均支持 `--help` 查看完整参数。
 
 **`wave1.json` 极简示例（按需删减，一个对象 = 一个独立员工 Tab）：**
 ```json

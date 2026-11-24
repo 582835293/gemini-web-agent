@@ -18,5 +18,5 @@
 - **Wave 2（Task 沙盒重加工）**：
   - 向 `data_engineer` 上传原始 `.csv` / `.xlsx` / `.json` / `.pdf` 附件。
   - **沙盒优势（预装无需安装）**：`pandas 2.2.3`、`numpy 2.1.3`、`matplotlib 3.10.1`、`PIL 11.1.0`、`libreoffice 7.4.7.2`（可命令行转 PDF/DOCX/XLSX）。
-  - **防坑契约**：提示词中写明沙盒断网不可 `pip install`（缺 `pandoc`/`zip` CLI），中文字体/图表需处理好兼容，最终结果（清洗后 Excel/CSV、高清 PNG 图表、LibreOffice 导出的 PDF 简报）**统一用 Python `zipfile` 打包成一个 `.zip` 交付**。
+  - **防坑契约**：未开启 `gemini-spark` 远程联网时需声明禁用 `pip install`（已开启联网可装包但严禁传入含敏感凭据/隐私的机密表）；缺 `pandoc`/`zip` CLI，中文字体/图表需处理好兼容，最终结果（清洗后 Excel/CSV、高清 PNG 图表、LibreOffice 导出的 PDF 简报）**统一用 Python `zipfile` 打包成一个 `.zip` 交付**。
 - **Wave 3（洞察成稿）**：将 `data_engineer` 算出的真实汇总 JSON（而非几万行原始数据）贴给 `lead_analyst`，生成最终面向管理层/用户的决策摘要与报告。

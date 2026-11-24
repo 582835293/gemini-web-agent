@@ -44,8 +44,8 @@ python scripts/setup_skill.py --update
      - 完整歌曲生成：`Lyria 3.5`（直接导出完整 MP3）
      - 语音合成与多角色配音：`Gemini 3.8 Flash TTS`（直接导出 WAV）
      - 视频生成：`Omni 1.2 Flash` / `Omni 1.1 Flash`（`key_off` 免费不耗 Flow 点数）与视觉生图兜底：`Nano Banana 2.1`
-   - **`gemini.google.com/app`（专注 `任务 (Task)` 异步实战员工）**
-     - 专攻 **`任务 (Task)`** 模式：自带跨轮持久化的 **`Debian 12` (2C / 7.8G / 19G) 云端断网沙盒**（预装 `python3 3.11` / `node 18` / `gcc 12` / `ffmpeg 5.1` / `libreoffice 7.4` / 无头 `chromium 156` / `PIL` / `cv2` / `pydub` / `pandas` / `matplotlib`），重活/主程/QA 用 **`4 Neon`**，素材批处理/切图/混音/清洗脚本用 **`4 Hydrogen`**（要求统一用 Python `zipfile` 打包交付）
+   - **`gemini.google.com/app`（专注 `任务 (Task)` 云端 Linux 主机员工）**
+     - 专攻 **`任务 (Task)`** 模式：自带跨任务持久化的 **`Debian 12` (2C / 7.8G / 19G) 云端 Linux 主机**（预装 `python3 3.11` / `node 18` / `gcc 12` / `ffmpeg 5.1` / `libreoffice 7.4` / 无头 `chromium 156` / `PIL` / `cv2` / `pydub` / `pandas` / `matplotlib`）。在 [`gemini.google.com/gemini-spark`](https://gemini.google.com/gemini-spark) 开启 **“允许远程计算机访问网络”** 后可直接联网 `pip/npm install` 与调外部 API 独立完活（**注意**：联网状态下所有任务共享同一台远程主机，严禁向 Task 发送 API Key、私密凭证或敏感数据；关闭开关则回退为隔离离线沙盒）。重活/主程/QA 用 **`4 Neon`**，素材批处理/切图/混音/清洗脚本用 **`4 Hydrogen`**（要求统一用 Python `zipfile` 打包交付）
    - **`aistudio.google.com/apps`（Build 整包外包团队）**
      - 适合从零构建完整整套 Web 应用（`MAX` + `4 Neon` 导出 `.zip`），支持内嵌防擅自加料负面契约
    - **`flow.google.com`（Google Flow 独立点数池 — 视觉素材工厂）**
@@ -136,8 +136,11 @@ $cli = ".\scripts\gemini_web.py"
 python .\scripts\setup_skill.py --setup-ai-chrome --launch-ai-chrome
 Start-Process -WindowStyle Hidden $py "$cli daemon"
 
-# 1. 一键并发波次调度（核心提速：1 条命令同时驱动多个独立 Tab，自动解包/下载并回写花名册）
+# 1. 一键并发波次调度 & 一站体检（支持 --resume 断点续传、task-net 云主机联网查询及原生 stdio MCP Server 模式）
+& $py $cli doctor
+& $py $cli task-net status
 & $py $cli wave --spec ".\proj\wave1.json" --roster-file ".\proj\.web-team.json" --project-dir ".\proj" --timeout 360
+& $py $cli wave --spec ".\proj\wave1.json" --roster-file ".\proj\.web-team.json" --project-dir ".\proj" --resume
 python $cli roster audit --file ".\proj\.web-team.json" --project-dir ".\proj" --min-roles 2
 
 # 2. 多端实时额度巡检（默认均输出极简行摘要省 Token；完整版可加 --json / --markdown）

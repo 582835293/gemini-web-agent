@@ -253,18 +253,23 @@ def find_language_servers():
     candidates = []
     if sys.platform == "win32":
         # 0. Windows 零子进程 Win32 ctypes 原生探测（~10-30ms，免除 tasklist / wmic / powershell 开销）
+        win32_ok = False
         try:
             scripts_dir = str(Path(__file__).resolve().parent)
             if scripts_dir not in sys.path:
                 sys.path.insert(0, scripts_dir)
             import platform_utils
-            win32_cands = platform_utils.find_windows_servers_via_win32()
+            if hasattr(platform_utils, "find_windows_servers_status"):
+                win32_cands, win32_ok = platform_utils.find_windows_servers_status()
+            else:
+                win32_cands = platform_utils.find_windows_servers_via_win32()
+                win32_ok = bool(win32_cands)
             if win32_cands:
                 candidates.extend(win32_cands)
         except Exception:
             pass
 
-        if candidates:
+        if candidates or win32_ok:
             candidates.sort(key=lambda x: x["score"], reverse=True)
             return candidates
 
@@ -494,6 +499,8 @@ def fetch_live_rpc_data(use_cache: bool = True):
         try:
             with open(RPC_CACHE_PATH, "r", encoding="utf-8") as f:
                 cached = json.load(f)
+            if cached.get("unavailable") and (time.time() - float(cached.get("saved_at", 0))) < 120:
+                return None
             port = cached.get("port")
             csrf_token = cached.get("csrf_token")
             proto = cached.get("protocol", "http")
@@ -527,6 +534,11 @@ def fetch_live_rpc_data(use_cache: bool = True):
                 probes.append((cand, csrf_token, port, proto))
 
     if not probes:
+        try:
+            with open(RPC_CACHE_PATH, "w", encoding="utf-8") as f:
+                json.dump({"unavailable": True, "saved_at": time.time()}, f)
+        except Exception:
+            pass
         return None
 
     def _save_and_build(cand, csrf_token, port, proto, user_status, quota_summary):
