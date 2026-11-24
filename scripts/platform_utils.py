@@ -618,8 +618,33 @@ def is_ai_chrome_configured(custom_dir: str = "", home: Path | None = None) -> b
     return (prof / "Default").is_dir()
 
 
+def _read_linux_xdg_user_dir(key: str, home_dir: Path) -> Path | None:
+    """从 ~/.config/user-dirs.dirs 读取 XDG 用户目录（如中文 Ubuntu 下 XDG_DESKTOP_DIR="$HOME/桌面"）。"""
+    cfg = home_dir / ".config" / "user-dirs.dirs"
+    if not cfg.is_file():
+        return None
+    try:
+        for line in cfg.read_text(encoding="utf-8", errors="ignore").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            if k.strip() != key:
+                continue
+            val = v.strip().strip('"').strip("'")
+            val = val.replace("$HOME", str(home_dir))
+            if val.startswith("~"):
+                val = str(home_dir / val[2:] if val.startswith("~/") else home_dir)
+            p = Path(val)
+            if p.is_dir():
+                return p
+    except Exception:
+        pass
+    return None
+
+
 def _resolve_desktop_dir(sys_name: str | None = None, home: Path | None = None) -> Path:
-    """跨平台定位用户桌面目录（Windows 兼容 OneDrive 重定向桌面）。"""
+    """跨平台定位用户桌面目录（Windows 兼容 OneDrive；Linux 兼容 XDG_DESKTOP_DIR 如 ~/桌面）。"""
     sys_low = (sys_name or platform.system()).lower()
     home_dir = home or Path.home()
     if sys_low.startswith("win"):
@@ -638,6 +663,13 @@ def _resolve_desktop_dir(sys_name: str | None = None, home: Path | None = None) 
                     return p
         except Exception:
             pass
+    elif sys_low == "linux":
+        xdg_desk = _read_linux_xdg_user_dir("XDG_DESKTOP_DIR", home_dir)
+        if xdg_desk is not None:
+            return xdg_desk
+        zh_desk = home_dir / "桌面"
+        if zh_desk.is_dir():
+            return zh_desk
     desktop = home_dir / "Desktop"
     return desktop if desktop.exists() else home_dir
 
@@ -839,6 +871,20 @@ def launch_ai_chrome(
             launched_pid = proc.pid
     else:
         popen_kwargs["start_new_session"] = True
+        if platform.system().lower() == "linux" and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            env_copy = dict(os.environ)
+            uid = os.getuid() if hasattr(os, "getuid") else 1000
+            run_dir = Path(f"/run/user/{uid}")
+            if (run_dir / "wayland-0").exists():
+                env_copy.setdefault("XDG_RUNTIME_DIR", str(run_dir))
+                env_copy.setdefault("WAYLAND_DISPLAY", "wayland-0")
+            if Path("/tmp/.X11-unix/X0").exists():
+                env_copy.setdefault("DISPLAY", ":0")
+            elif Path("/tmp/.X11-unix/X1").exists():
+                env_copy.setdefault("DISPLAY", ":1")
+            if (run_dir / "bus").exists():
+                env_copy.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={run_dir / 'bus'}")
+            popen_kwargs["env"] = env_copy
         proc = subprocess.Popen(cmd, **popen_kwargs)
         launched_pid = proc.pid
 

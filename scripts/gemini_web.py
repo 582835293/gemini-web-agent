@@ -4081,7 +4081,9 @@ def execute_doctor(port_override: int | None = None, skip_flow: bool = False) ->
     us = browser_report.get("usage") or {}
     cur_pct = (us.get("current_usage") or {}).get("used_pct")
     wk_pct = (us.get("weekly_usage") or {}).get("used_pct")
-    if us.get("status") == "error" or (cur_pct is not None and float(cur_pct) >= 90) or (wk_pct is not None and float(wk_pct) >= 95):
+    if us.get("status") == "error":
+        hints.append("提示: 检测到网页额度页未成功加载（若刚新建隔离 Profile，请先在该浏览器窗口登录一次 Google 账号）；也可改用其他已登录通道或本地额度。")
+    elif (cur_pct is not None and float(cur_pct) >= 90) or (wk_pct is not None and float(wk_pct) >= 95):
         hints.append(_cross_channel_fallback_hint("gemini"))
     fl = browser_report.get("flow_usage") or {}
     if fl.get("status") == "error" or (fl.get("credits") is not None and int(fl["credits"]) <= 0):
