@@ -52,8 +52,8 @@ python scripts/setup_skill.py --update
      - `Nano Banana 2.1` 生图：**0 点数消耗（每日有数十张免费限额，默认按 `x1` 生成省着用）**，支持直接下载 `1K 原始尺寸` 或 `2K 已高清重塑`；产出原图可直接转交 Gemini `Task` 做自动化抠图切图后期
    - **`Omni 1.2 Flash` / `Veo 3.1 - Lite` 生视频**：使用独立每月 Flow 点数池，不消耗本地 coding 配额
 3. **安全透明的双通道自由选择架构（托底保稳 + 并发可选）+ 云端共享总线**
-   - **选项 1（默认托底首选）：通道 A — AgentLimb MCP（复用日常 Chrome，无需重新登录）**
-     直接复用你日常 Chrome 中已登录的所有 Google 账号，**不需要新建目录、不需要重新输入账号密码**，对最在意账号安全与零折腾的用户最友好（推荐安装 `AgentLimb >= v0.8.2`）。适合中轻度任务，但在多员工多波次并发场景下因需逐轮工具调用，耗时相对较长。
+   - **选项 1（免重登复用日常 Chrome）：通道 A — AgentLimb Bridge / MCP（支持单命令 CLI 直连提速）**
+     直接复用你日常 Chrome 中已登录的所有 Google 账号，**不需要新建目录、不需要重新输入账号密码**。当本机 AgentLimb Host 开放 `POST /api/tool` 本地桥接端口（`127.0.0.1:8765..8780`）时，**[`scripts/gemini_web.py`](scripts/gemini_web.py) 与 [`scripts/agentlimb_bridge.py`](scripts/agentlimb_bridge.py) 支持直接通过 `--channel a`（或默认 `auto`）单条命令驱动日常 Chrome 并发跑 `wave` / `ask` / `playground` / `flow` / `doctor`**，省去大模型逐轮调 MCP 的高延迟（若未开 `/api/tool` 则优雅降级 `browser_batch` MCP 打包）。
    - **选项 2（进阶提速 5~10 倍）：通道 B — 独立 AI Chrome Profile + `daemon` + `wave` 一键并发引擎（完全由用户自己决定是否启用）**
      - 为何需要单独建一个 Chrome Profile？因为 Chrome 136+ 已在内核禁止对日常默认 `User Data` 目录通过参数开启永久 CDP 调试端口。
      - **完全本地、透明、绝不碰日常账号**：如果你希望体验 `gemini_web.py wave --spec wave1.json` **单条命令并发起跑 4~8 个 Tab、提速 5~10 倍并省去 80%+ 本地推理往返**，可由你自己决定运行 `python scripts/setup_skill.py --setup-ai-chrome --launch-ai-chrome`（或在日常 Chrome 地址栏访问 `chrome://inspect/#remote-debugging` 手动点允许）。独立 Profile（`~/.gemini-web-chrome`，端口 `9229`）的所有 Cookie/会话数据**100% 保存在你本机桌面目录内、开源代码完全可审计、绝不上传任何账号凭证**——只是首次打开时需要你在新窗口里自行登录一次 Google 账号。
@@ -83,7 +83,8 @@ gemini-web-agent/
 ├── scripts/
 │   ├── setup_skill.py        # AI 一键自动安装、建 .venv 与跨平台通道自检脚本
 │   ├── platform_utils.py     # 跨发行版 Linux /proc 与 Win32 探测、venv 兜底与 Chromium 注册表
-│   ├── gemini_web.py         # Playwright CDP 全功能 CLI + roster/playbook/harvest 编队工具
+│   ├── agentlimb_bridge.py   # AgentLimb 本地 /api/tool 直连适配层（纯标准库，通道 A 单命令并发）
+│   ├── gemini_web.py         # 双通道 (CDP + AgentLimb Bridge) 全功能 CLI + roster/playbook/harvest 编队工具
 │   └── inspect_antigravity.py # 内置 Antigravity 本地双轨配额、后端路由与 Token 消耗检测脚本
 ├── tests/
 │   ├── test_core.py          # 纯标准库离线冒烟测试（模型/编队/花名册/harvest/跨发行版与/proc）

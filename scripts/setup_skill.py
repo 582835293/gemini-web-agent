@@ -186,6 +186,28 @@ def _has_enabled_agentlimb_toml(raw_text: str) -> bool:
     return "[mcp_servers.agentlimb]" in raw_text
 
 
+def detect_agentlimb_bridge(port_override: int | None = None, check_api_tool: bool = True) -> dict:
+    """探测本机 AgentLimb HTTP Bridge (127.0.0.1:8765..8780) 与 /api/tool 直连能力。"""
+    try:
+        scripts_dir = str(Path(__file__).resolve().parent)
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import agentlimb_bridge
+
+        return agentlimb_bridge.discover_agentlimb_bridge(
+            port_override=port_override,
+            check_api_tool=check_api_tool,
+        )
+    except Exception as exc:
+        return {
+            "running": False,
+            "port": None,
+            "authorized": False,
+            "api_tool_supported": False,
+            "error": str(exc),
+        }
+
+
 def detect_agentlimb_mcp() -> dict:
     """扫描本机常见 AI 客户端 MCP 配置，检查是否已配置 agentlimb。"""
     home = Path.home()
@@ -598,6 +620,12 @@ def main() -> None:
 
     venv_info = ensure_venv_and_deps(target_dir, skip_pip=args.skip_pip)
     agentlimb_info = detect_agentlimb_mcp()
+    bridge_info = detect_agentlimb_bridge(check_api_tool=True)
+    agentlimb_info["bridge"] = bridge_info
+    agentlimb_ready_bridge = bool(
+        bridge_info.get("running") and bridge_info.get("authorized") and bridge_info.get("api_tool_supported")
+    )
+    agentlimb_info["bridge_ready"] = agentlimb_ready_bridge
     cdp_info = detect_chrome_cdp(ai_port=args.ai_chrome_port, ai_dir=args.ai_chrome_dir)
     version_meta = _read_version_meta(target_dir)
 
@@ -610,6 +638,8 @@ def main() -> None:
         recommended_channel = "B"
     elif cdp_info.get("ai_chrome_configured") and venv_info["dependencies_ready"]:
         recommended_channel = "B_autostart"
+    elif agentlimb_ready_bridge:
+        recommended_channel = "A_bridge"
     elif agentlimb_info["configured"]:
         recommended_channel = "A"
     elif cdp_info["cdp_active"] and venv_info["dependencies_ready"]:
@@ -634,7 +664,21 @@ def main() -> None:
             "检测到用户已自备独立 AI Chrome (~/.gemini-web-chrome) 但当前未启动，AI 可直接运行 `setup_skill.py --launch-ai-chrome` "
             "（或直接调用 gemini_web.py 自动拉起 `9229`）直连高速通道 B，无需反复询问。"
         )
+    elif recommended_channel == "A_bridge":
+        next_actions.append(
+            f"通道 A 高速 HTTP Bridge (`/api/tool`, port={bridge_info.get('port')}) 已就绪！"
+            "无需新建 Profile 或重登，直接运行 `gemini_web.py` 单条 CLI 命令 (`doctor` / `ask` / `playground` / `flow` / `wave`) "
+            "即可像通道 B 一样自动直连日常 Chrome 并发跑完（省去大模型逐轮调 MCP 延迟）。"
+        )
     elif recommended_channel == "A":
+        if bridge_info.get("running") and not bridge_info.get("api_tool_supported"):
+            next_actions.append(
+                f"通道 A AgentLimb MCP (port={bridge_info.get('port')}) 已就绪，但当前 Host 未开放 /api/tool；请优先用 `browser_batch` 打包微操以减少往返。"
+            )
+        elif bridge_info.get("running") and not bridge_info.get("authorized"):
+            next_actions.append(
+                f"检测到 AgentLimb Bridge (port={bridge_info.get('port')}) 已运行但尚未获浏览器授权，请打开日常 Chrome 窗口并在 AgentLimb 侧栏点击「复制连接提示词」授权。"
+            )
         next_actions.append(
             "通道 A (AgentLimb MCP) 已就绪，无需重新登录即可直接复用日常 Chrome（稳妥托底首选）。"
             "若用户感觉多标签调度较慢、明确希望提速 5~10 倍，可向用户透明说明利弊并征求其选择："
@@ -676,7 +720,16 @@ def main() -> None:
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
-        a_tag = "ready" if agentlimb_info["configured"] else "off"
+        if agentlimb_ready_bridge:
+            a_tag = f"bridge_ready:{bridge_info.get('port')}"
+        elif bridge_info.get("running") and bridge_info.get("api_tool_supported") and not bridge_info.get("authorized"):
+            a_tag = f"bridge_unauth:{bridge_info.get('port')}"
+        elif bridge_info.get("running") and not bridge_info.get("api_tool_supported"):
+            a_tag = f"mcp_only:{bridge_info.get('port')}"
+        elif agentlimb_info["configured"]:
+            a_tag = "ready"
+        else:
+            a_tag = "off"
         b_tag = cdp_info["cdp_mode"]
         if not cdp_info["cdp_http_ready"] and cdp_info.get("ai_chrome_configured"):
             b_tag = f"configured_offline:{args.ai_chrome_port}"

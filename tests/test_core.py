@@ -876,6 +876,182 @@ class TestHighSpeedChannelBAndWave(unittest.TestCase):
             (pu.get_ai_chrome_profile_dir(home=fake_home) / "Default").mkdir(parents=True)
             self.assertTrue(pu.is_ai_chrome_configured(home=fake_home))
 
+    def test_v13_agentlimb_bridge_adapter_and_routing(self) -> None:
+        """验证 AgentLimb HTTP Bridge (/api/tool) 探测、Playwright 兼容适配与双通道自动路由。"""
+        import http.server
+        import re
+        import socketserver
+        import threading
+        from unittest.mock import patch
+
+        import agentlimb_bridge as ab
+
+        recorded_calls: list[tuple[str, dict]] = []
+        state = {"enable_api_tool": True, "no_window": False}
+
+        class MockBridgeHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                return
+
+            def _send(self, code: int, payload: dict):
+                raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self):
+                if self.path == "/health":
+                    self._send(200, {
+                        "ok": True,
+                        "service": "agentlimb-bridge",
+                        "version": "0.8.1",
+                        "port": self.server.server_address[1],
+                        "browsers": 1,
+                        "browserList": [{"id": "Profile-1", "label": "Work", "authorized": True, "active": True}],
+                        "paired": True,
+                        "authorized": True,
+                        "stage": "ready",
+                    })
+                    return
+                self._send(404, {"ok": False, "error": "not found"})
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+                if self.path == "/api/tool":
+                    if not state["enable_api_tool"]:
+                        self._send(404, {"ok": False, "error": "not found"})
+                        return
+                    tool = body.get("tool", "")
+                    args = body.get("arguments") or {}
+                    recorded_calls.append((tool, args))
+                    if tool == "ping":
+                        self._send(200, {"ok": True, "result": {"result": {"ok": True, "pong": True}}})
+                    elif tool == "tab_new":
+                        if state["no_window"]:
+                            self._send(200, {"ok": False, "error": "No current window"})
+                        else:
+                            self._send(200, {"ok": True, "result": {"result": {"ok": True, "tabId": 77, "url": args.get("url", "about:blank")}}})
+                    elif tool == "tabs_context":
+                        self._send(200, {"ok": True, "result": {"result": {"ok": True, "count": 1, "tabs": [{"id": 77, "url": "https://gemini.google.com/app/MOCK1"}]}}})
+                    elif tool == "navigate":
+                        self._send(200, {"ok": True, "result": {"result": {"ok": True, "url": args.get("url")}}})
+                    elif tool == "javascript_eval":
+                        expr = str(args.get("expression") or "")
+                        if "return els.length;" in expr:
+                            val = 2
+                        elif "return Boolean(el && __gwaIsVisible(el));" in expr:
+                            val = True
+                        elif "hasRect" in expr:
+                            val = {"found": True, "cx": 120.5, "cy": 80.0, "hasRect": True}
+                        elif "return el ? __gwaNormText(el) : '';" in expr:
+                            val = "任务"
+                        else:
+                            val = {"ok": True, "hello": "world"}
+                        self._send(200, {"ok": True, "result": {"result": {"__gwa": 1, "ok": True, "href": "https://gemini.google.com/app/MOCK1", "val": val}}})
+                    elif tool == "find":
+                        self._send(200, {"ok": True, "result": {"result": {"ok": True, "count": 1, "matches": [{"ref": 9, "role": "button"}]}}})
+                    elif tool in ("computer", "tab_activate", "tab_close", "browser_batch", "say", "wait"):
+                        self._send(200, {"ok": True, "result": {"result": {"ok": True}}})
+                    else:
+                        self._send(200, {"ok": False, "error": f"unknown tool {tool}"})
+                    return
+                self._send(404, {"ok": False, "error": "not found"})
+
+        class ReusableServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            allow_reuse_address = True
+
+        srv = ReusableServer(("127.0.0.1", 0), MockBridgeHandler)
+        port = srv.server_address[1]
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        try:
+            # 1. 探测支持 /api/tool 的 Bridge
+            info = ab.discover_agentlimb_bridge(ports=[port], check_api_tool=True)
+            self.assertTrue(info["running"])
+            self.assertTrue(info["authorized"])
+            self.assertTrue(info["api_tool_supported"])
+
+            browser = ab.connect_agentlimb_bridge(port_override=port)
+            self.assertTrue(browser._is_agentlimb)
+            self.assertTrue(browser.is_connected())
+
+            ctx = browser.contexts[0]
+            page = ctx.new_page()
+            self.assertEqual(page.tab_id, 77)
+            page.goto("https://gemini.google.com/app")
+            self.assertIn("gemini.google.com", page.url)
+
+            loc = page.locator('button:text-is("任务"):visible').filter(has_text=re.compile("任务")).first
+            self.assertEqual(loc.count(), 2)
+            self.assertTrue(loc.is_visible())
+            self.assertEqual(loc.inner_text(), "任务")
+            loc.click()
+            loc.trusted_click()
+            loc.fill("测试填表")
+            page.keyboard.press("Control+Enter")
+            browser.bridge.batch([{"tool": "tab_activate", "args": {"tabId": 77}}])
+            ev = page.evaluate("() => ({a: 1})")
+            self.assertEqual(ev, {"ok": True, "hello": "world"})
+            ev_iife = page.evaluate("(() => ({a: 2}))()")
+            self.assertEqual(ev_iife, {"ok": True, "hello": "world"})
+            page.close()
+            self.assertTrue(page.is_closed())
+
+            tools_seen = [t for t, _ in recorded_calls]
+            self.assertIn("find", tools_seen)
+            self.assertIn("browser_batch", tools_seen)
+            self.assertIn("computer", tools_seen)
+            self.assertIn("tabs_context", tools_seen)
+            self.assertIn("tab_close", tools_seen)
+
+            # 2. _exec_browser auto 模式下当 B 未就绪时自动走 AgentLimb Bridge
+            with patch.object(gw, "call_daemon", return_value=None), \
+                 patch.object(gw, "_can_use_channel_b_quickly", return_value=False), \
+                 patch.object(ab, "DEFAULT_AGENTLIMB_PORTS", [port]):
+                routed = gw._exec_browser(
+                    port=None,
+                    path="/usage",
+                    payload={},
+                    local_fn=lambda b: {"status": "ok", "is_al": getattr(b, "_is_agentlimb", False)},
+                    channel="auto",
+                )
+            self.assertTrue(routed["is_al"])
+            self.assertEqual(routed["channel"], "A_agentlimb_bridge")
+
+            # 3. Chrome 无打开窗口时报错转为中文指引
+            state["no_window"] = True
+            with self.assertRaises(RuntimeError) as err_ctx:
+                ctx.new_page()
+            self.assertIn("No current window", str(err_ctx.exception))
+            self.assertIn("日常 Chrome", str(err_ctx.exception))
+            state["no_window"] = False
+
+            # 4. 兼容原版 AgentLimb (无 /api/tool 返回 404 时准确识别 mcp_only)
+            state["enable_api_tool"] = False
+            mcp_only = ab.discover_agentlimb_bridge(ports=[port], check_api_tool=True)
+            self.assertTrue(mcp_only["running"])
+            self.assertFalse(mcp_only["api_tool_supported"])
+            with self.assertRaises(RuntimeError):
+                ab.connect_agentlimb_bridge(port_override=port)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+        # 5. 双通道会话状态隔离：通道 A 与通道 B 的最近会话 URL 互不覆盖
+        with tempfile.TemporaryDirectory() as td:
+            old_sf = gw.SESSION_STATE_FILE
+            try:
+                gw.SESSION_STATE_FILE = Path(td) / "sessions.json"
+                gw._save_last_session("gemini", "https://gemini.google.com/app/chan_b_id")
+                gw._save_last_session("gemini", "https://gemini.google.com/app/chan_a_id", channel="a")
+                self.assertEqual(gw._load_last_session("gemini"), "https://gemini.google.com/app/chan_b_id")
+                self.assertEqual(gw._load_last_session("gemini", channel="a"), "https://gemini.google.com/app/chan_a_id")
+            finally:
+                gw.SESSION_STATE_FILE = old_sf
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

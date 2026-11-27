@@ -14,7 +14,7 @@ description: >-
 > **【防偷懒与防串台四条死令（违者视为任务彻底失败）】**
 > 1. **严禁多个角色共用同一个标签页/会话**：通道 B 必须通过 `wave` 或 `--role <role>` 自动分配独立 Tab（CLI 内置 `ROLE_URL_CONFLICT` 拦截）；通道 A 必须对每个新角色调用 `tab_new` + `roster set --tab-id`（CLI `ROLE_TAB_CONFLICT` + JS `window.__WEB_TEAM_ROLE` 双重拦截）。
 > 2. **模式 B 下严禁本地 `write_file` 编写业务源码，严禁用 Canvas 几何块或 WebAudio 振荡器伪造替代 Flow/Lyria/TTS 资产**：所有外包代码必须由网页员工产出并经 `wave --unpack-json-dir` 或 `harvest --unpack-json` 落盘；美术/音频必须真实生成下载入 `assets/`（模式 A 本地强模型也严禁手写万字或手抄大产物）。
-> 3. **通道选择与用户知情自选 + 防风控节流原则**：先看 `setup_skill.py` 输出——若为 `prefer=B` 或 **`prefer=B_autostart`（用户已配好 `~/.gemini-web-chrome` 只是当前未运行）**，可直接拉起 `--launch-ai-chrome`（或直接调 `gemini_web.py` 自动拉起 `9229`）走高速通道 B (`gemini_web.py wave` 默认带 `3.5s` 拟人错峰与新页水合停顿，严禁 `--stagger 0` 疯狂连刷防风控)；若仅 `prefer=A`，稳妥走 AgentLimb 托底（禁 `read_page`/`form_input`/`computer` 轮询，`javascript_eval` 用 `expression`，`wait` 用 `timeout`，每次操作后留自然间隔），**绝不未征得用户同意首次运行 `--setup-ai-chrome` 新建需重登的 Profile！**
+> 3. **通道选择与用户知情自选 + 防风控节流原则**：先看 `setup_skill.py` 输出——若为 `prefer=B` 或 **`prefer=B_autostart`（用户已配好 `~/.gemini-web-chrome` 只是当前未运行）**，可直接拉起 `--launch-ai-chrome`（或直接调 `gemini_web.py` 自动拉起 `9229`）走高速通道 B (`gemini_web.py wave` 默认带 `3.5s` 拟人错峰与新页水合停顿，严禁 `--stagger 0` 疯狂连刷防风控)；若为 **`prefer=A_bridge`（AgentLimb 本地 `/api/tool` HTTP Bridge 已就绪）**，可直接运行单条 `gemini_web.py` CLI / `wave` 命令（默认 `auto` 或传 `--channel a`）免重登高速直连日常 Chrome，同样跳过大模型中间往返！若仅 `prefer=A`（无 `/api/tool`），再稳妥走 AgentLimb MCP (`browser_batch` 打包减往返)，**绝不未征得用户同意首次运行 `--setup-ai-chrome` 新建需重登的 Profile！**
 > 4. **完工交差前必跑 `roster audit` 门禁**：交付前必须运行 `python scripts/gemini_web.py roster audit --file "<项目>/.web-team.json" --project-dir "<项目>"`，返回 `ok | audit=passed` 方可验收；出现 `MISSING_FLOW_IMAGES` / `MISSING_AUDIO_FILES` / `DUPLICATE_TAB_ID` / `DUPLICATE_SESSION_URL` 必须立刻补齐真实外包！
 
 ---
@@ -113,11 +113,12 @@ python $cli roster audit --file "./proj/.web-team.json" --project-dir "./proj" -
 
 ---
 
-### 通道 A（默认稳妥托底）：AgentLimb MCP — 4 步并发派单流水线
+### 通道 A（免重登复用日常 Chrome）：CLI Bridge 直连（首选） & MCP 批量兜底
 
-> 直接复用日常 Chrome 已登录账号（无需另建窗口重登，安全透明）；当 `prefer=A` 时直接走本通道，完整四大渠道可复制 JS 宏与精确参数表见 [references/agentlimb.md](references/agentlimb.md)。
+> **双模提速**：若 `setup_skill.py` 显示 `A=bridge_ready:<port>`（本机 AgentLimb Bridge 已暴露 `POST /api/tool`），**直接用上方通道 B 相同的单条 `gemini_web.py` 命令**（`doctor` / `ask` / `playground` / `flow` / `wave --spec ...`，自动路由或加 `--channel a`）即可在本地 Python 进程内直连日常 Chrome 并发跑完——**免新建 Profile、免重登、零大模型中间往返，而且无需安装 Playwright 也能运行！**
+> 若当前主机为未开启 `/api/tool` 的标准 AgentLimb（`A=mcp_only` 或 `A=ready`），则按以下 MCP 流水线调度（完整 JS 宏与 `browser_batch` 打包规则见 [references/agentlimb.md](references/agentlimb.md)）：
 
-1. **批量建房登记**：为每个员工各自 `tab_new` 并跑 `python $cli roster set --role <r> --tab-id <id>`。
-2. **并发点火**：连续对 Wave 1 所有角色 Tab 注入带 `window.__WEB_TEAM_ROLE` 锁的发包 JS（**不中途死等，让多 Tab 同时开工**；`javascript_eval` 参数必须用 `expression`，`wait` 参数必须用 `timeout`）。
-3. **激活收割落盘**：依次 `wait(condition="page_contains", text="Response ready.", timeout=30000)` → `tab_activate(tabId)` → 触发 `bundle-<role>.json` 或媒体下载 → `python $cli harvest --pattern "bundle-*.json,*.png,*.mp3,*.wav,*.zip" --unpack-json --dest "<项目>"`。
-4. **门禁验收 & 收尾**：跑 `roster audit` 通过并完成本地测试后，调用 `agentlimb:say` 释放侧边栏。
+1. **批量建房登记**：为每个员工各自 `tab_new`（可用 `browser_batch` 一次开多页）并跑 `python $cli roster set --role <r> --tab-id <id>`。
+2. **并发点火**：优先用 `browser_batch` 或连续对 Wave 1 所有角色 Tab 注入带 `window.__WEB_TEAM_ROLE` 锁的发包 JS（**不中途死等，让多 Tab 同时开工**；`javascript_eval` 参数必须用 `expression`，`wait` 参数必须用 `timeout`）。
+3. **激活收割落盘**：用 `browser_batch([tab_activate, javascript_eval])` 或依次 `wait(condition="page_contains", text="Response ready.", timeout=30000)` → `tab_activate(tabId)` → 触发 `bundle-<role>.json` 或媒体下载 → `python $cli harvest --pattern "bundle-*.json,*.png,*.mp3,*.wav,*.zip" --unpack-json --dest "<项目>"`。
+4. **门禁验收 & 收尾**：跑 `roster audit` 通过并完成本地测试后，如任务是从侧栏发起的再调用 `agentlimb:say` 释放面板。

@@ -55,12 +55,20 @@ def _human_pause(page, min_ms: int = 700, max_ms: int = 1400) -> None:
 
 
 def _human_fill(page, locator, text: str) -> None:
-    """拟人聚焦、输入并在发送前保留自然停顿（带真实键盘/焦点事件）。"""
+    """拟人聚焦、输入并在发送前保留自然停顿（AgentLimb 仅 Flow ProseMirror 短文本走真实键盘，其余走高速 fill 清空写入）。"""
+    content = text or ""
+    if _is_agentlimb_page(page):
+        cur_url = (getattr(page, "url", "") or "").lower()
+        if "flow.google.com" in cur_url and len(content) <= 250 and "\n" not in content and hasattr(locator, "type_real"):
+            locator.type_real(content)
+        else:
+            locator.fill(content)
+        _human_pause(page, 350, 650)
+        return
     locator.scroll_into_view_if_needed()
     _human_pause(page, 220, 420)
     locator.click()
     _human_pause(page, 450, 800)
-    content = text or ""
     if len(content) <= 180 and "\n" not in content:
         try:
             locator.fill("")
@@ -73,12 +81,18 @@ def _human_fill(page, locator, text: str) -> None:
     _human_pause(page, 1400, 2200)
 
 
-def _load_last_session(site: str) -> str:
-    """读取最近一次活跃的会话 URL（按站点 gemini / aistudio）。"""
+def _session_key(site: str, channel: str = "") -> str:
+    ch = (channel or "").strip().lower()
+    return f"{site}:{ch}" if ch == "a" else site
+
+
+def _load_last_session(site: str, channel: str = "") -> str:
+    """读取最近一次活跃的会话 URL（按站点与通道隔离，避免通道 A/B 不同账号误开对方私有会话）。"""
+    key = _session_key(site, channel)
     try:
         if SESSION_STATE_FILE.exists():
             data = json.loads(SESSION_STATE_FILE.read_text(encoding="utf-8"))
-            url = str(data.get(site, "")).strip()
+            url = str(data.get(key, "")).strip()
             if url.startswith("https://"):
                 return url
     except Exception:
@@ -86,8 +100,8 @@ def _load_last_session(site: str) -> str:
     return ""
 
 
-def _save_last_session(site: str, url: str) -> None:
-    """仅保存具体会话 URL（跳过空白首页和 new_chat），方便长任务跨轮/跨重启续接。"""
+def _save_last_session(site: str, url: str, channel: str = "") -> None:
+    """仅保存具体会话 URL（跳过空白首页和 new_chat），按站点与通道隔离方便跨轮续接。"""
     if not url or not url.startswith("https://"):
         return
     if site == "gemini" and not re.search(r"gemini\.google\.com/app/[^/?#]+", url):
@@ -96,6 +110,7 @@ def _save_last_session(site: str, url: str) -> None:
         "/new_chat" in url or not re.search(r"aistudio\.google\.com/prompts/[^/?#]+", url)
     ):
         return
+    key = _session_key(site, channel)
     try:
         SESSION_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         data = {}
@@ -104,7 +119,7 @@ def _save_last_session(site: str, url: str) -> None:
                 data = json.loads(SESSION_STATE_FILE.read_text(encoding="utf-8"))
             except Exception:
                 data = {}
-        data[site] = url
+        data[key] = url
         SESSION_STATE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
@@ -186,6 +201,7 @@ def _read_system_text(system_instruction: str, system_file: str) -> str:
 MODEL_OPTIONS = {
     "auto": ("bard-mode-option-8c46e95b1a07cecc", "自动"),
     "flash-lite": ("bard-mode-option-8c46e95b1a07cecc", "自动"),
+    "flash": ("bard-mode-option-56fdd199312815e2", "Hydrogen"),
     "hydrogen": ("bard-mode-option-56fdd199312815e2", "Hydrogen"),
     "4h": ("bard-mode-option-56fdd199312815e2", "Hydrogen"),
     "neon": ("bard-mode-option-e6fa609c3fa255c0", "Neon"),
@@ -205,6 +221,19 @@ def _import_platform_utils():
         sys.path.insert(0, scripts_dir)
     import platform_utils
     return platform_utils
+
+
+def _import_agentlimb_bridge():
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import agentlimb_bridge
+    return agentlimb_bridge
+
+
+def _is_agentlimb_page(obj) -> bool:
+    """判断 browser 或 page 是否运行在 AgentLimb Bridge 适配层。"""
+    return bool(getattr(obj, "_is_agentlimb", False))
 
 
 def _iter_devtools_active_port_files() -> list[Path]:
@@ -288,14 +317,15 @@ def get_gemini_page(browser, new_tab: bool = True, tab_url_hint: str = "", bring
     """获取或打开 Gemini 标签页；复用模式支持按历史会话 URL 重连。"""
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     if new_tab and not tab_url_hint:
-        for page in context.pages:
-            url = page.url or ""
-            if re.match(r"^https://gemini\.google\.com/app(?:/?(?:\?.*)?)$", url):
-                if page.locator("model-response").count() == 0:
-                    if bring_to_front:
-                        page.bring_to_front()
-                    wait_gemini_ready(page)
-                    return page
+        if not _is_agentlimb_page(browser):
+            for page in context.pages:
+                url = page.url or ""
+                if re.match(r"^https://gemini\.google\.com/app(?:/?(?:\?.*)?)$", url):
+                    if page.locator("model-response").count() == 0:
+                        if bring_to_front:
+                            page.bring_to_front()
+                        wait_gemini_ready(page)
+                        return page
         page = context.new_page()
         if bring_to_front:
             page.bring_to_front()
@@ -324,7 +354,7 @@ def get_gemini_page(browser, new_tab: bool = True, tab_url_hint: str = "", bring
     if tab_url_hint.startswith("https://"):
         target_url = tab_url_hint
     else:
-        last_url = _load_last_session("gemini")
+        last_url = _load_last_session("gemini", channel="a" if _is_agentlimb_page(browser) else "")
         if last_url and (not tab_url_hint or tab_url_hint in last_url):
             target_url = last_url
         elif tab_url_hint:
@@ -445,44 +475,59 @@ def _gemini_import_code(page, code_folder: str = "", github_repo: str = "") -> d
         folder_p = Path(folder_raw).expanduser().resolve()
         if not folder_p.is_dir():
             raise FileNotFoundError(f"待导入代码目录不存在: {folder_raw}")
-        try:
-            _open_import_code_dialog()
-            folder_btn = page.locator(
-                'button:has-text("Upload folder"), button:has-text("上传文件夹")'
-            ).first
-            folder_btn.wait_for(state="visible", timeout=10000)
-            with page.expect_file_chooser(timeout=15000) as fc_info:
-                folder_btn.click()
-            fc_info.value.set_files(str(folder_p))
-            page.wait_for_timeout(2000)
-            imported["code_folder"] = str(folder_p)
-            imported["code_import_mode"] = "upload_folder"
-        except Exception:
-            # 关闭可能残留的弹窗，降级打包 ZIP 走普通上传确保不中断任务
-            cancel_btn = page.locator('button[aria-label*="Cancel code import" i], button[aria-label*="取消"]').first
-            if cancel_btn.count() > 0 and cancel_btn.is_visible():
-                cancel_btn.click()
-                page.wait_for_timeout(250)
+        if _is_agentlimb_page(page):
             zip_file = _zip_code_folder_fallback(folder_p)
             _gemini_attach_files(page, [str(zip_file)])
             imported["code_folder"] = str(folder_p)
             imported["code_import_mode"] = "zip_fallback"
             imported["fallback_zip"] = str(zip_file)
+        else:
+            try:
+                _open_import_code_dialog()
+                folder_btn = page.locator(
+                    'button:has-text("Upload folder"), button:has-text("上传文件夹")'
+                ).first
+                folder_btn.wait_for(state="visible", timeout=10000)
+                with page.expect_file_chooser(timeout=15000) as fc_info:
+                    folder_btn.click()
+                fc_info.value.set_files(str(folder_p))
+                page.wait_for_timeout(2000)
+                imported["code_folder"] = str(folder_p)
+                imported["code_import_mode"] = "upload_folder"
+            except Exception:
+                # 关闭可能残留的弹窗，降级打包 ZIP 走普通上传确保不中断任务
+                cancel_btn = page.locator('button[aria-label*="Cancel code import" i], button[aria-label*="取消"]').first
+                if cancel_btn.count() > 0 and cancel_btn.is_visible():
+                    cancel_btn.click()
+                    page.wait_for_timeout(250)
+                zip_file = _zip_code_folder_fallback(folder_p)
+                _gemini_attach_files(page, [str(zip_file)])
+                imported["code_folder"] = str(folder_p)
+                imported["code_import_mode"] = "zip_fallback"
+                imported["fallback_zip"] = str(zip_file)
 
     return imported
 
 
 def select_entry_mode(page, entry: str) -> None:
-    """在新对话页切换「对话/Chat」或「任务/Task」模式（兼容最高 15s 异步延迟渲染的分段切换器）。"""
+    """在新对话页切换「对话/Chat」或「任务/Task」模式（兼容延迟渲染与无分段按钮的新版精简 UI）。"""
     seg_or_btn = (
         'gem-segmented-button button:visible, '
         'button:text-is("任务"):visible, '
         'button:text-is("Task"):visible'
     )
-    try:
-        page.locator(seg_or_btn).first.wait_for(state="visible", timeout=15000)
-    except Exception:
-        pass
+    deadline = time.time() + 15.0
+    textbox_seen_at: float | None = None
+    while time.time() < deadline:
+        if page.locator(seg_or_btn).count() > 0:
+            break
+        if page.locator('div[role="textbox"]:visible').count() > 0:
+            if textbox_seen_at is None:
+                textbox_seen_at = time.time()
+            # 输入框就绪后最多再等 2.5s 分段按钮异步水合，避免精简 UI 白白空等 15s
+            elif (time.time() - textbox_seen_at) >= 2.5:
+                break
+        page.wait_for_timeout(250)
     labels = ("任务", "Task") if entry.strip().lower() == "task" else ("对话", "Chat")
     for label in labels:
         btn = page.locator(f'gem-segmented-button button:has-text("{label}"), button:text-is("{label}")').first
@@ -493,7 +538,9 @@ def select_entry_mode(page, entry: str) -> None:
                     page.wait_for_timeout(200)
                     if (btn.get_attribute("aria-pressed") or "").lower() == "true":
                         break
-            page.wait_for_timeout(450)
+                page.wait_for_timeout(750)
+            else:
+                page.wait_for_timeout(450)
             return
 
 
@@ -778,31 +825,64 @@ def execute_ask(
     textbox = page.locator('div[role="textbox"]').first
     _human_fill(page, textbox, prompt)
 
-    send_btn = page.locator('button[aria-label="发送"], button[aria-label*="Send" i], button.send-button').first
+    send_btn = page.locator(
+        'button[aria-label="发送"]:visible, button[aria-label="Send message"]:visible, '
+        'button[aria-label="Submit"]:visible, button.send-button:visible, '
+        'button[aria-label*="Send" i]:visible'
+    ).first
     if send_btn.count() > 0 and send_btn.is_visible():
+        # AgentLimb 下先用零阻塞 JS click（实测 0.05s 即提交）；若撞上慢水合则在后续重试里补发及降级 trusted_click
         send_btn.click()
     else:
         textbox.press("Enter")
 
-    # 防止后台/新建页面首点击未触发提交：短暂确认输入是否清空或已生成新响应，必要时补按 Enter
-    page.wait_for_timeout(800)
-    if page.locator("model-response").count() == before_count:
+    def _ask_started() -> bool:
+        if page.locator("model-response").count() > before_count:
+            return True
+        if not (textbox.inner_text() or "").strip():
+            # 输入框已被提交清空，若页面已进入 Stop/typing 状态或拿到 /app/<id> 会话即视为已启动
+            stop_now = page.locator('button[aria-label*="Stop" i]:visible, button[aria-label*="停止"]:visible').first
+            if stop_now.count() > 0 or "/app/" in (page.url or ""):
+                return True
+        return False
+
+    # 防止后台/新建页面首点击撞上前端慢水合：间隔 1.2s 补点快速 JS click（实测水合完 0.05s 提交），连续未清框才降级 Enter/trusted_click
+    last_retry_ts = time.time()
+    for idx in range(5 if _is_agentlimb_page(page) else 1):
+        page.wait_for_timeout(1200 if idx > 0 else 900)
+        if _ask_started():
+            break
         try:
             still_text = (textbox.inner_text() or "").strip()
-            if still_text:
+            if not still_text:
+                continue
+            if send_btn.count() > 0 and send_btn.is_visible():
+                if _is_agentlimb_page(page) and idx == 4 and hasattr(send_btn, "trusted_click"):
+                    send_btn.trusted_click()
+                else:
+                    send_btn.click()
+            else:
                 textbox.focus()
                 textbox.press("Enter")
+            last_retry_ts = time.time()
         except Exception:
             pass
 
     if async_send:
-        # 异步任务发射模式：等 URL 分配会话 ID 或出现响应节点后即刻返回
-        deadline = time.time() + 15
+        # 异步任务发射模式：等 URL 分配会话 ID、进入生成态或框已清空即返回；未清空则每 2s 补点快速发送
+        deadline = time.time() + 18
         while time.time() < deadline:
-            if "/app/" in (page.url or "") or page.locator("model-response").count() > before_count:
+            if _ask_started():
                 break
+            if _is_agentlimb_page(page) and (time.time() - last_retry_ts) >= 2.0:
+                try:
+                    if (textbox.inner_text() or "").strip() and send_btn.count() > 0 and send_btn.is_visible():
+                        send_btn.click()
+                        last_retry_ts = time.time()
+                except Exception:
+                    pass
             page.wait_for_timeout(300)
-        _save_last_session("gemini", page.url)
+        _save_last_session("gemini", page.url, channel="a" if _is_agentlimb_page(page) else "")
         out = {
             "status": "dispatched",
             "entry": effective_entry,
@@ -819,8 +899,16 @@ def execute_ask(
 
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
-        if page.locator("model-response").count() > before_count:
+        if page.locator("model-response").count() > before_count or _ask_started():
             break
+        # 慢水合场景：输入框仍有文本且距上次重试 >= 2.0s 时优先补发零阻塞 JS click
+        if _is_agentlimb_page(page) and (time.time() - last_retry_ts) >= 2.0:
+            try:
+                if (textbox.inner_text() or "").strip() and send_btn.count() > 0 and send_btn.is_visible():
+                    send_btn.click()
+                    last_retry_ts = time.time()
+            except Exception:
+                pass
         page.wait_for_timeout(300)
     else:
         raise TimeoutError("等待 Gemini 网页端开始输出超时。")
@@ -834,8 +922,10 @@ def execute_ask(
         page.wait_for_timeout(1000)
         wait_response_complete(page, latest_resp, deadline)
 
+    if _is_agentlimb_page(page):
+        page.bring_to_front()
     res = extract_latest_result(page)
-    _save_last_session("gemini", res.get("url") or page.url)
+    _save_last_session("gemini", res.get("url") or page.url, channel="a" if _is_agentlimb_page(page) else "")
     res["status"] = "ok"
     if attached_files:
         res["attached_files"] = attached_files
@@ -848,6 +938,8 @@ def execute_ask(
 def execute_fetch(browser, tab_url_hint: str) -> dict:
     """回收异步任务或已有会话标签页的最新状态与结果。"""
     page = get_gemini_page(browser, new_tab=False, tab_url_hint=tab_url_hint)
+    if _is_agentlimb_page(page):
+        page.bring_to_front()
     res = extract_latest_result(page)
     res["status"] = "running" if res.get("running") else "ok"
     return res
@@ -1095,7 +1187,7 @@ def _get_aistudio_page(
         if tab_url_hint.startswith("https://"):
             target_url = tab_url_hint
         else:
-            last_url = _load_last_session("aistudio") if required_path == "/prompts" else ""
+            last_url = _load_last_session("aistudio", channel="a" if _is_agentlimb_page(browser) else "") if required_path == "/prompts" else ""
             if last_url and (not tab_url_hint or tab_url_hint in last_url):
                 target_url = last_url
             elif tab_url_hint:
@@ -1866,12 +1958,12 @@ def execute_playground(
                 break
             page.wait_for_timeout(300)
         if _return_handle:
-            _save_last_session("aistudio", page.url)
+            _save_last_session("aistudio", page.url, channel="a" if _is_agentlimb_page(page) else "")
             drive_id = _extract_aistudio_drive_id(page.url)
             set_title = ""
         else:
             set_title = _aistudio_set_prompt_title(page, title) if title else ""
-            _save_last_session("aistudio", page.url)
+            _save_last_session("aistudio", page.url, channel="a" if _is_agentlimb_page(page) else "")
             drive_id = _extract_aistudio_drive_id(page.url)
         out = {
             "status": "dispatched",
@@ -1994,7 +2086,7 @@ def execute_attach(
     if inferred_site == "gemini":
         page = get_gemini_page(browser, new_tab=False, tab_url_hint=tab_url_hint)
         attached = _gemini_attach_files(page, file_paths)
-        _save_last_session("gemini", page.url)
+        _save_last_session("gemini", page.url, channel="a" if _is_agentlimb_page(page) else "")
     else:
         page = _get_aistudio_page(
             browser,
@@ -2004,7 +2096,7 @@ def execute_attach(
             tab_url_hint=tab_url_hint,
         )
         attached = _aistudio_attach_files(page, file_paths)
-        _save_last_session("aistudio", page.url)
+        _save_last_session("aistudio", page.url, channel="a" if _is_agentlimb_page(page) else "")
 
     return {
         "status": "attached",
@@ -2336,7 +2428,7 @@ def execute_flow_usage(browser) -> dict:
 
 def _flow_ensure_direct_mode(page) -> None:
     """确保处于 Google Flow 直出提示栏模式（显示「设置触发器」按钮），而非聊天智能体视图。"""
-    trig = page.locator('button[aria-label="设置触发器"], button[aria-label*="Settings trigger" i]').first
+    trig = page.locator('button[aria-label="设置触发器"], button[aria-label*="Settings trigger" i], button.settings-trigger-button').first
     if trig.count() > 0 and trig.is_visible():
         return
 
@@ -2351,14 +2443,20 @@ def _flow_ensure_direct_mode(page) -> None:
                 return
             break
 
-    # 若仍处在「智能体」开关开启状态，点击切换开关回到直出模式
+    # 若仍处在「智能体 / Flow Agent」开关开启状态，点击切换开关回到直出模式
     switched = page.evaluate(
         """() => {
+            const agentSw = document.querySelector('button[aria-label="Flow Agent"].checked, button[aria-label="Flow Agent"][aria-checked="true"]');
+            if (agentSw) {
+                agentSw.click();
+                return true;
+            }
             for (const b of document.querySelectorAll('button')) {
                 const r = b.getBoundingClientRect();
                 if (r.width <= 0 || r.height <= 0) continue;
                 const txt = (b.innerText || '').trim();
-                if (txt === '智能体' || txt === 'Agent') {
+                const aria = (b.getAttribute('aria-label') || '').trim();
+                if (txt === '智能体' || txt === 'Agent' || (aria === 'Flow Agent' && b.classList.contains('checked'))) {
                     b.click();
                     return true;
                 }
@@ -2367,7 +2465,7 @@ def _flow_ensure_direct_mode(page) -> None:
         }"""
     )
     if switched:
-        page.wait_for_timeout(400)
+        page.wait_for_timeout(500)
     trig.wait_for(state="visible", timeout=15000)
 
 
@@ -2381,7 +2479,18 @@ def _flow_configure(
     video_mode: str,
 ) -> int | None:
     """打开「设置触发器」配置媒体类型、比例、模型、分辨率与数量（默认 x1），返回预计消耗点数。"""
-    trig = page.locator('button[aria-label="设置触发器"], button[aria-label*="Settings trigger" i]').first
+    trig = page.locator('button[aria-label="设置触发器"], button[aria-label*="Settings trigger" i], button.settings-trigger-button').first
+    # 默认图像参数（Nano Banana 2.1 + 16:9 + x1）若已在当前配置上生效，直接跳过开关设置浮层，避免动画抢焦点
+    is_video_req = media.strip().lower() == "video"
+    want_aspect = aspect or "16:9"
+    want_model_l = (FLOW_MODEL_ALIASES.get(model.strip().lower(), model.strip()) if model else "Nano Banana 2.1").lower()
+    if not is_video_req and want_aspect == "16:9" and int(count or 1) == 1 and not resolution and want_model_l == "nano banana 2.1":
+        try:
+            trig_txt = (trig.inner_text() or "").lower()
+            if "nano banana 2.1" in trig_txt and "16_9" in trig_txt and "x1" in trig_txt:
+                return 0
+        except Exception:
+            pass
     trig.click()
     page.wait_for_timeout(400)
 
@@ -2456,9 +2565,13 @@ def _flow_configure(
     backdrop = page.locator(".cdk-overlay-backdrop").first
     if backdrop.count() > 0 and backdrop.is_visible():
         backdrop.click()
+        try:
+            backdrop.wait_for(state="hidden", timeout=2500)
+        except Exception:
+            pass
     else:
         trig.click()
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(350)
     return estimated
 
 
@@ -2493,8 +2606,8 @@ def _flow_download_latest(page, media_urls: list[str], download_dir: str, resolu
     out_dir.mkdir(parents=True, exist_ok=True)
     saved: list[str] = []
 
-    # 图片优先尝试卡片「更多选项 -> 下载 -> 2K/1K」，可触发 2K 高清重塑版本
-    if media == "image":
+    # 图片仅在显式指定 1K/2K 清晰度或缺少直链时才走卡片三级菜单下载；默认直接通过浏览器上下文拉取媒体 URL（提速 10x）
+    if media == "image" and (resolution or not media_urls):
         try:
             tile = page.locator(".tile-row").first
             more = tile.locator('button[aria-label="更多选项"], button[aria-label*="More" i]').first
@@ -2597,10 +2710,24 @@ def execute_flow(
     before_urls = set(_flow_collect_media_urls(page))
     box = page.locator('div.ProseMirror[aria-label="您希望创作什么？"], div.ProseMirror[role="textbox"]').first
     _human_fill(page, box, prompt)
+    if prompt and not (box.inner_text() or "").strip():
+        box.fill(prompt)
+        _human_pause(page, 250, 450)
 
-    gen_btn = page.locator('button[aria-label="开始生成"], button.generate-icon-button').first
+    gen_btn = page.locator('button[aria-label="开始生成"], button[aria-label="Start generation"], button.generate-icon-button').first
     gen_btn.wait_for(state="visible", timeout=10000)
-    gen_btn.click()
+    if _is_agentlimb_page(page) and hasattr(gen_btn, "trusted_click"):
+        gen_btn.trusted_click()
+        # 兜底检查：若首点击撞上前端焦点切换未触发生成，快速补填并补点一次
+        page.wait_for_timeout(1200)
+        try:
+            still_box = (box.inner_text() or "").strip()
+            if still_box:
+                gen_btn.trusted_click()
+        except Exception:
+            pass
+    else:
+        gen_btn.click()
 
     if async_send:
         page.wait_for_timeout(1500)
@@ -2620,15 +2747,37 @@ def execute_flow(
 
     deadline = time.time() + timeout_sec
     new_urls: list[str] = []
+    check_tick = 0
     while time.time() < deadline:
         cur_urls = _flow_collect_media_urls(page)
         new_urls = [u for u in cur_urls if u not in before_urls]
         if new_urls:
             break
+        check_tick += 1
+        if check_tick % 3 == 0:
+            try:
+                err_txt = page.evaluate(
+                    """() => {
+                        const txt = document.body ? (document.body.innerText || '') : '';
+                        if (/unusual activity|something went wrong|异常活动|出了点问题|无法生成/i.test(txt)) {
+                            const m = txt.match(/(?:We noticed some unusual activity[^\\n]*|Something went wrong[^\\n]*|[^\\n]*异常活动[^\\n]*)/i);
+                            return m ? m[0].trim() : 'Google Flow returned generation error';
+                        }
+                        return '';
+                    }"""
+                )
+                if err_txt:
+                    raise RuntimeError(f"Google Flow 生成失败: {err_txt}")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
         page.wait_for_timeout(1000)
     else:
         raise TimeoutError(f"等待 Google Flow 生成{media}超时。")
 
+    if _is_agentlimb_page(page) and download_dir:
+        page.bring_to_front()
     saved_files = (
         _flow_download_latest(page, new_urls, download_dir=download_dir, resolution=resolution, media=media)
         if download_dir
@@ -3082,6 +3231,8 @@ def execute_wave(
                     if not new_urls:
                         still_pending.append(item)
                         continue
+                    if _is_agentlimb_page(page) and item["download_dir"]:
+                        page.bring_to_front()
                     saved_files = (
                         _flow_download_latest(
                             page,
@@ -3114,17 +3265,33 @@ def execute_wave(
                     })
 
                 else:
-                    # Gemini Web (task / chat)
-                    if page.locator("model-response").count() <= item["before_count"]:
-                        still_pending.append(item)
-                        continue
+                    # Gemini Web (task / chat)：新会话直接轮询 DOM_STATUS_EVAL_JS，兼容未渲染 model-response 标签的新版 UI
                     st = page.evaluate(DOM_STATUS_EVAL_JS)
+                    if item["before_count"] > 0 and page.locator("model-response").count() <= item["before_count"]:
+                        if not bool(st.get("running", False)):
+                            still_pending.append(item)
+                            continue
                     running = bool(st.get("running", False))
                     text_body = st.get("text") or st.get("answer") or ""
                     if text_body != item["last_text"]:
                         item["last_text"] = text_body
                         item["last_change_at"] = time.time()
                     has_payload = bool(text_body) or bool(st.get("images") or [])
+                    if _is_agentlimb_page(page) and not running and not has_payload and not item.get("_al_nudged"):
+                        if (time.time() - item["started_at"]) >= 12.0:
+                            item["_al_nudged"] = True
+                            try:
+                                page.bring_to_front()
+                                tb = page.locator('div[role="textbox"]').first
+                                if tb.count() > 0 and (tb.inner_text() or "").strip():
+                                    sb = page.locator(
+                                        'button[aria-label="发送"]:visible, button[aria-label="Send message"]:visible, '
+                                        'button[aria-label="Submit"]:visible, button.send-button:visible'
+                                    ).first
+                                    if sb.count() > 0 and sb.is_visible():
+                                        sb.click()
+                            except Exception:
+                                pass
                     done_now = False
                     if not running and has_payload:
                         item["stable_ticks"] += 1
@@ -3138,6 +3305,11 @@ def execute_wave(
                     if not done_now:
                         still_pending.append(item)
                         continue
+
+                    if _is_agentlimb_page(page):
+                        page.bring_to_front()
+                        st = page.evaluate(DOM_STATUS_EVAL_JS)
+                        text_body = st.get("text") or st.get("answer") or text_body
 
                     final_url = st.get("url") or page.url or item["url"]
                     rec = {
@@ -3382,20 +3554,101 @@ def call_daemon(path: str, payload: dict, bind_port: int = DAEMON_PORT) -> dict 
         return None
 
 
+def _can_use_channel_b_quickly(port_override: int | None = None) -> bool:
+    """快速探测本机是否存在就绪的通道 B HTTP CDP 端口或已配置的独立 AI Chrome。"""
+    if port_override is not None:
+        return True
+    pu = _import_platform_utils()
+    if pu.probe_cdp_http(pu.AI_CHROME_DEFAULT_PORT, timeout_sec=0.8):
+        return True
+    if hasattr(pu, "is_ai_chrome_configured") and pu.is_ai_chrome_configured():
+        return True
+    for active_port_file in _iter_devtools_active_port_files():
+        if not active_port_file.exists():
+            continue
+        lines = [
+            ln.strip()
+            for ln in active_port_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if ln.strip()
+        ]
+        if len(lines) >= 2 and lines[0].isdigit() and pu.probe_cdp_http(int(lines[0]), timeout_sec=0.6):
+            return True
+    return False
+
+
+def _exec_browser(
+    port: int | None,
+    path: str,
+    payload: dict,
+    local_fn,
+    channel: str = "auto",
+    browser_profile: str = "",
+) -> dict:
+    """统一路由双通道：优先已配置的通道 B (daemon/CDP)，若未配置或指定 --channel a 则自动直连 AgentLimb HTTP Bridge。"""
+    ch = (channel or os.environ.get("GEMINI_WEB_CHANNEL") or "auto").strip().lower()
+    if ch not in ("auto", "a", "b"):
+        raise ValueError(f"不支持的 --channel 参数: {channel}（仅支持 auto | a | b）")
+    b_prof = (browser_profile or os.environ.get("GEMINI_WEB_AGENTLIMB_BROWSER") or "").strip()
+
+    if port is not None:
+        ch = "b"
+
+    def _run_via_agentlimb(bridge_port: int | None = None) -> dict:
+        ab = _import_agentlimb_bridge()
+        browser = ab.connect_agentlimb_bridge(browser_profile=b_prof, port_override=bridge_port)
+        res_a = local_fn(browser)
+        if isinstance(res_a, dict):
+            res_a.setdefault("channel", "A_agentlimb_bridge")
+        return res_a
+
+    def _run_via_cdp() -> dict:
+        res_d = call_daemon(path, payload)
+        if res_d is not None:
+            if isinstance(res_d, dict):
+                res_d.setdefault("channel", "B_cdp")
+            return res_d
+        ws_url = get_cdp_ws_url(port)
+        with _get_sync_playwright()() as p:
+            browser = p.chromium.connect_over_cdp(ws_url, timeout=5000)
+            res_b = local_fn(browser)
+            if isinstance(res_b, dict):
+                res_b.setdefault("channel", "B_cdp")
+            return res_b
+
+    if ch == "a":
+        return _run_via_agentlimb()
+    if ch == "b":
+        return _run_via_cdp()
+
+    # auto 模式：常驻 daemon > 已配置/就绪通道 B CDP > 已授权的 AgentLimb /api/tool Bridge > CDP 报错提示
+    res_d = call_daemon(path, payload)
+    if res_d is not None:
+        if isinstance(res_d, dict):
+            res_d.setdefault("channel", "B_cdp")
+        return res_d
+
+    if _can_use_channel_b_quickly(port):
+        return _run_via_cdp()
+
+    ab = _import_agentlimb_bridge()
+    bridge_info = ab.discover_agentlimb_bridge(check_api_tool=True)
+    if bridge_info.get("running") and bridge_info.get("authorized") and bridge_info.get("api_tool_supported"):
+        return _run_via_agentlimb(bridge_port=bridge_info.get("port"))
+
+    return _run_via_cdp()
+
+
 def _exec_cdp(port: int | None, path: str, payload: dict, local_fn) -> dict:
-    """优先转发给本地常驻 daemon；未运行则直连 CDP 执行（超时 5000ms 快速失败）。"""
-    res = call_daemon(path, payload)
-    if res is not None:
-        return res
-    ws_url = get_cdp_ws_url(port)
-    with _get_sync_playwright()() as p:
-        browser = p.chromium.connect_over_cdp(ws_url, timeout=5000)
-        return local_fn(browser)
+    """向后兼容别名：委托 `_exec_browser` 路由。"""
+    return _exec_browser(port, path, payload, local_fn)
 
 
 def _default_downloads_dir() -> Path:
-    """跨平台定位用户默认下载目录。"""
-    return Path.home() / "Downloads"
+    """跨平台定位用户默认下载目录（兼容中文 Linux ~/下载）。"""
+    try:
+        return _import_platform_utils().get_downloads_dir()
+    except Exception:
+        return Path.home() / "Downloads"
 
 
 def _safe_rel_dest(base_dir: Path, rel_path: str) -> Path:
@@ -3932,14 +4185,25 @@ def _print_result(
         return
     if res.get("entry") == "doctor":
         cdp = res.get("cdp") or {}
+        ab = res.get("agentlimb_bridge") or {}
         tn = res.get("task_network") or {}
         tn_str = "on" if tn.get("network_enabled") else ("off" if tn.get("status") == "ok" else tn.get("status", "unknown"))
         us = res.get("usage") or {}
         fl = res.get("flow_usage") or {}
         cur_pct = (us.get("current_usage") or {}).get("used_pct")
+        if ab.get("running") and ab.get("authorized") and ab.get("api_tool_supported"):
+            ab_tag = f"ready:{ab.get('port')}"
+        elif ab.get("running") and ab.get("api_tool_supported"):
+            ab_tag = f"unauth:{ab.get('port')}"
+        elif ab.get("running"):
+            ab_tag = f"mcp_only:{ab.get('port')}"
+        else:
+            ab_tag = "off"
         parts = [
             f"ok | doctor | prefer={cdp.get('recommended_channel', '?')}",
+            f"active={res.get('active_channel') or '-'}",
             f"cdp={cdp.get('cdp_mode', '?')}:{cdp.get('cdp_port') or '-'}",
+            f"bridge={ab_tag}",
             f"task_net={tn_str}",
         ]
         if cur_pct is not None:
@@ -3970,6 +4234,9 @@ def _print_result(
         print(_format_compact_usage(res))
         return
     meta_parts: list[str] = [str(res.get("status") or "ok")]
+    if res.get("channel"):
+        ch_short = "A_bridge" if str(res["channel"]).startswith("A_") else "B_cdp"
+        meta_parts.append(f"ch={ch_short}")
     if res.get("model"):
         meta_parts.append(f"model={_short_model_name(str(res['model']))}")
     rs = res.get("run_settings") or {}
@@ -4017,8 +4284,18 @@ def _add_json_flag(p) -> None:
     p.add_argument("--json", dest="as_json", action="store_true", help="输出完整 JSON（默认直接输出极简行协议以省 Token）")
 
 
+def _add_channel_flags(p) -> None:
+    p.add_argument(
+        "--channel",
+        choices=["auto", "a", "b"],
+        default="auto",
+        help="执行通道: auto(默认优先通道 B，未配置时自动走 AgentLimb Bridge) | a(强制走 AgentLimb Bridge) | b(强制走 CDP)",
+    )
+    p.add_argument("--browser-profile", default="", help="多 Chrome 配置文件连接 AgentLimb 时指定目标 Profile ID/标签")
+
+
 def _doctor_probe_browser(browser, skip_flow: bool = False) -> dict:
-    """在已连接的 CDP browser 实例上只读巡检 Gemini 用量、Flow 点数与 gemini-spark 云主机联网状态。"""
+    """在已连接的 browser 实例上只读巡检 Gemini 用量、Flow 点数与 gemini-spark 云主机联网状态。"""
     report: dict = {}
     for key, fn in (
         ("usage", lambda: execute_usage(browser)),
@@ -4032,44 +4309,96 @@ def _doctor_probe_browser(browser, skip_flow: bool = False) -> dict:
     return report
 
 
-def execute_doctor(port_override: int | None = None, skip_flow: bool = False) -> dict:
-    """轻量环境体检：检测 CDP 与 AgentLimb 通道状态；若通道 B 就绪，一并巡检额度与 gemini-spark 联网开关。"""
+def execute_doctor(
+    port_override: int | None = None,
+    skip_flow: bool = False,
+    channel: str = "auto",
+    browser_profile: str = "",
+) -> dict:
+    """轻量环境体检：检测 CDP 与 AgentLimb Bridge 状态；任一高速通道就绪即一并巡检额度与 gemini-spark 联网开关。"""
     t0 = time.time()
     cdp_info: dict = {}
     agentlimb_info: dict = {}
+    bridge_info: dict = {}
     try:
         import setup_skill
         cdp_info = setup_skill.detect_chrome_cdp()
         if hasattr(setup_skill, "detect_agentlimb_mcp"):
             agentlimb_info = setup_skill.detect_agentlimb_mcp()
+        if hasattr(setup_skill, "detect_agentlimb_bridge"):
+            bridge_info = setup_skill.detect_agentlimb_bridge(check_api_tool=True)
     except Exception as exc:
         cdp_info = {"error": str(exc)}
 
+    if not bridge_info:
+        try:
+            bridge_info = _import_agentlimb_bridge().discover_agentlimb_bridge(check_api_tool=True)
+        except Exception:
+            bridge_info = {}
+
     cdp_ready = bool(cdp_info.get("cdp_http_ready"))
     al_ready = bool(agentlimb_info.get("configured"))
+    bridge_ready = bool(bridge_info.get("running") and bridge_info.get("authorized") and bridge_info.get("api_tool_supported"))
     ai_cfg = bool(cdp_info.get("ai_chrome_configured"))
-    recommended_channel = "B" if cdp_ready else ("B_autostart" if ai_cfg else ("A" if al_ready else "setup"))
+    recommended_channel = "B" if cdp_ready else ("B_autostart" if ai_cfg else ("A_bridge" if bridge_ready else ("A" if al_ready else "setup")))
+
+    eff_ch = (channel or os.environ.get("GEMINI_WEB_CHANNEL") or "auto").strip().lower()
+    if port_override is not None:
+        eff_ch = "b"
+    b_prof = (browser_profile or os.environ.get("GEMINI_WEB_AGENTLIMB_BROWSER") or "").strip()
 
     browser_report: dict = {}
+    active_channel = "none"
     try:
-        res = call_daemon("/doctor", {"skip_flow": skip_flow})
-        if res is not None:
+        if eff_ch == "a":
+            ab = _import_agentlimb_bridge()
+            al_browser = ab.connect_agentlimb_bridge(browser_profile=b_prof)
+            browser_report = _doctor_probe_browser(al_browser, skip_flow=skip_flow)
+            active_channel = "A_agentlimb_bridge"
+        elif eff_ch == "b" or cdp_ready:
+            res = call_daemon("/doctor", {"skip_flow": skip_flow})
+            if res is not None:
+                browser_report = res
+                active_channel = "B_cdp"
+            elif cdp_ready or eff_ch == "b":
+                ws_url = get_cdp_ws_url(port_override)
+                with _get_sync_playwright()() as p:
+                    browser = p.chromium.connect_over_cdp(ws_url, timeout=5000)
+                    browser_report = _doctor_probe_browser(browser, skip_flow=skip_flow)
+                active_channel = "B_cdp"
+            else:
+                browser_report = {"status": "cdp_unavailable", "note": "当前无就绪 HTTP CDP 端口"}
+        elif bridge_ready and not ai_cfg:
+            ab = _import_agentlimb_bridge()
+            al_browser = ab.connect_agentlimb_bridge(browser_profile=b_prof, port_override=bridge_info.get("port"))
+            browser_report = _doctor_probe_browser(al_browser, skip_flow=skip_flow)
+            active_channel = "A_agentlimb_bridge"
+        elif res := call_daemon("/doctor", {"skip_flow": skip_flow}):
             browser_report = res
-        elif cdp_ready:
-            ws_url = get_cdp_ws_url(port_override)
-            with _get_sync_playwright()() as p:
-                browser = p.chromium.connect_over_cdp(ws_url, timeout=5000)
-                browser_report = _doctor_probe_browser(browser, skip_flow=skip_flow)
+            active_channel = "B_cdp"
+        elif bridge_ready:
+            ab = _import_agentlimb_bridge()
+            al_browser = ab.connect_agentlimb_bridge(browser_profile=b_prof, port_override=bridge_info.get("port"))
+            browser_report = _doctor_probe_browser(al_browser, skip_flow=skip_flow)
+            active_channel = "A_agentlimb_bridge"
         else:
-            browser_report = {"status": "cdp_unavailable", "note": "当前无就绪 HTTP CDP 端口"}
+            browser_report = {"status": "cdp_unavailable", "note": "当前无就绪 HTTP CDP 端口或可用的 AgentLimb Bridge"}
     except Exception as exc:
-        browser_report = {"status": "cdp_unavailable", "note": str(exc)}
+        browser_report = {"status": "probe_unavailable", "note": str(exc)}
 
     hints: list[str] = []
-    if browser_report.get("status") == "cdp_unavailable" and "playwright" in str(browser_report.get("note") or "").lower():
-        hints.append("当前 Python 环境缺少 playwright，请改用 .venv Python（参见 setup_skill.py --auto 输出的 py= 路径）执行通道 B 命令。")
-    if recommended_channel == "A":
-        hints.append("当前走免重登通道 A (AgentLimb MCP)；如需单命令 wave 并发提速，可经同意运行 setup_skill.py --setup-ai-chrome --launch-ai-chrome 开启通道 B。")
+    if browser_report.get("status") in ("cdp_unavailable", "probe_unavailable") and "playwright" in str(browser_report.get("note") or "").lower():
+        hints.append("当前 Python 环境缺少 playwright，请改用 .venv Python（参见 setup_skill.py --auto 输出的 py= 路径）执行通道 B 命令，或使用 --channel a 免重登直连 AgentLimb。")
+    if recommended_channel == "A_bridge":
+        hints.append(
+            f"AgentLimb HTTP Bridge (port={bridge_info.get('port')}) 已直连就绪：ask/playground/flow/wave 均可直接单命令执行！"
+            "如还需更大并发吞吐，也可经同意配置独立 AI Chrome 通道 B。"
+        )
+    elif recommended_channel == "A":
+        if bridge_info.get("running") and not bridge_info.get("api_tool_supported"):
+            hints.append(f"AgentLimb Bridge (port={bridge_info.get('port')}) 未暴露 /api/tool，请优先使用 MCP `browser_batch` 或配置通道 B。")
+        else:
+            hints.append("当前走免重登通道 A (AgentLimb MCP)；如需单命令 wave 并发提速，可经同意运行 setup_skill.py --setup-ai-chrome --launch-ai-chrome 开启通道 B。")
     elif recommended_channel == "setup":
         hints.append("未检测到可用通道 A/B，建议配置 AgentLimb MCP 或启用独立 AI Chrome。")
     tn = browser_report.get("task_network") or {}
@@ -4092,11 +4421,13 @@ def execute_doctor(port_override: int | None = None, skip_flow: bool = False) ->
     return {
         "status": "ok",
         "entry": "doctor",
+        "active_channel": active_channel,
         "cdp": {
             "cdp_mode": cdp_info.get("cdp_mode"),
             "cdp_port": cdp_info.get("cdp_port"),
             "recommended_channel": recommended_channel,
         },
+        "agentlimb_bridge": bridge_info,
         **browser_report,
         "hints": hints,
         "elapsed_sec": round(time.time() - t0, 2),
@@ -4201,14 +4532,27 @@ def _mcp_tools_manifest() -> list[dict]:
     ]
 
 
-def _handle_mcp_tool_call(name: str, args: dict, port_override: int | None = None) -> dict:
-    """执行单个 MCP 工具调用并返回结果字典。"""
+def _handle_mcp_tool_call(
+    name: str,
+    args: dict,
+    port_override: int | None = None,
+    channel: str = "auto",
+    browser_profile: str = "",
+) -> dict:
+    """执行单个 MCP 工具调用并返回结果字典（支持 CDP 与 AgentLimb Bridge 自动双通道）。"""
     a = args or {}
+    eff_ch = str(a.get("channel") or channel or "auto")
+    eff_prof = str(a.get("browser_profile") or browser_profile or "")
     if name == "web_doctor":
-        return execute_doctor(port_override=port_override, skip_flow=bool(a.get("skip_flow", False)))
+        return execute_doctor(
+            port_override=port_override,
+            skip_flow=bool(a.get("skip_flow", False)),
+            channel=eff_ch,
+            browser_profile=eff_prof,
+        )
     if name == "task_network":
         act = str(a.get("action") or "status")
-        return _exec_cdp(port_override, "/task-net", {"action": act}, lambda b: execute_task_network(b, action=act))
+        return _exec_browser(port_override, "/task-net", {"action": act}, lambda b: execute_task_network(b, action=act), channel=eff_ch, browser_profile=eff_prof)
     if name == "roster_manage":
         return execute_roster(
             action=str(a.get("action") or "list"),
@@ -4217,7 +4561,7 @@ def _handle_mcp_tool_call(name: str, args: dict, port_override: int | None = Non
             min_roles=int(a.get("min_roles") or 2),
         )
     if name == "gemini_ask":
-        return _exec_cdp(
+        return _exec_browser(
             port_override,
             "/ask",
             {
@@ -4239,9 +4583,11 @@ def _handle_mcp_tool_call(name: str, args: dict, port_override: int | None = Non
                 code_folder=str(a.get("folder") or ""),
                 github_repo=str(a.get("github") or ""),
             ),
+            channel=eff_ch,
+            browser_profile=eff_prof,
         )
     if name == "aistudio_playground":
-        return _exec_cdp(
+        return _exec_browser(
             port_override,
             "/playground",
             {
@@ -4263,9 +4609,11 @@ def _handle_mcp_tool_call(name: str, args: dict, port_override: int | None = Non
                 fallback_model=str(a.get("fallback_model") or "auto"),
                 timeout_sec=int(a.get("timeout") or 180),
             ),
+            channel=eff_ch,
+            browser_profile=eff_prof,
         )
     if name == "flow_generate":
-        return _exec_cdp(
+        return _exec_browser(
             port_override,
             "/flow",
             {
@@ -4281,6 +4629,8 @@ def _handle_mcp_tool_call(name: str, args: dict, port_override: int | None = Non
                 aspect=str(a.get("aspect") or "16:9"),
                 download_dir=str(a.get("download_dir") or ""),
             ),
+            channel=eff_ch,
+            browser_profile=eff_prof,
         )
     if name == "web_wave":
         spec_path = Path(str(a["spec"])).expanduser().resolve()
@@ -4289,7 +4639,7 @@ def _handle_mcp_tool_call(name: str, args: dict, port_override: int | None = Non
         proj = str(raw_spec.get("project") or "") if isinstance(raw_spec, dict) else ""
         pdir = str(Path(str(a.get("project_dir") or ".")).expanduser().resolve())
         rfile = str(Path(str(a.get("roster_file") or ".web-team.json")).expanduser().resolve())
-        return _exec_cdp(
+        return _exec_browser(
             port_override,
             "/wave",
             {
@@ -4309,6 +4659,8 @@ def _handle_mcp_tool_call(name: str, args: dict, port_override: int | None = Non
                 resume=bool(a.get("resume", False)),
                 stagger_sec=float(a.get("stagger") or 3.5),
             ),
+            channel=eff_ch,
+            browser_profile=eff_prof,
         )
     raise ValueError(f"未知 MCP 工具: {name}")
 
@@ -4349,7 +4701,7 @@ def _write_mcp_message(stdout_buf, payload: dict, framing: str) -> None:
     stdout_buf.flush()
 
 
-def run_mcp_server(port_override: int | None = None) -> None:
+def run_mcp_server(port_override: int | None = None, channel: str = "auto", browser_profile: str = "") -> None:
     """零第三方依赖的轻量原生 stdio MCP Server（兼容 Antigravity / Claude / Cursor）。"""
     stdin_buf = sys.stdin.buffer
     stdout_buf = sys.stdout.buffer
@@ -4380,7 +4732,13 @@ def run_mcp_server(port_override: int | None = None) -> None:
             t_name = str(params.get("name") or "")
             t_args = params.get("arguments") or {}
             try:
-                res = _handle_mcp_tool_call(t_name, t_args, port_override=port_override)
+                res = _handle_mcp_tool_call(
+                    t_name,
+                    t_args,
+                    port_override=port_override,
+                    channel=channel,
+                    browser_profile=browser_profile,
+                )
                 out = {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False, indent=2)}], "isError": False}
             except Exception as exc:
                 out = {"content": [{"type": "text", "text": f"ERROR: {exc}"}], "isError": True}
@@ -4407,6 +4765,7 @@ def main() -> None:
     p_wave.add_argument("--stagger", type=float, default=3.5, help="各 Tab 错峰派单间隔秒数（默认 3.5，防过快点击触发风控）")
     p_wave.add_argument("--resume", action="store_true", help="断点续传：跳过 .web-team.json 中已完成且产物非空的角色，只重试未完成项")
     _add_json_flag(p_wave)
+    _add_channel_flags(p_wave)
     p_wave.add_argument("--port", type=int, default=None)
 
     p_ask = sub.add_parser("ask", help="在 gemini.google.com 发起异步任务或对话（默认 task 模式，支持文件夹/GitHub 导入）")
@@ -4430,6 +4789,7 @@ def main() -> None:
     p_ask.add_argument("--unpack-json-dir", default="", help="自动从回答中提取 {相对路径: 内容} JSON 并解包落盘")
     p_ask.add_argument("--raw", action="store_true", help="仅输出纯文本回答")
     _add_json_flag(p_ask)
+    _add_channel_flags(p_ask)
     p_ask.add_argument("--port", type=int, default=None)
 
     p_fetch = sub.add_parser("fetch", help="检查并回收 gemini.google.com 异步任务或已有会话的最新结果")
@@ -4437,11 +4797,13 @@ def main() -> None:
     p_fetch.add_argument("--out-file", default="", help="将正文直接写入本地文件，stdout 仅返回极简回执")
     p_fetch.add_argument("--raw", action="store_true", help="仅输出纯文本回答")
     _add_json_flag(p_fetch)
+    _add_channel_flags(p_fetch)
     p_fetch.add_argument("--port", type=int, default=None)
 
     p_usage = sub.add_parser("usage", help="检测网页端 https://gemini.google.com/usage 用量限额")
     p_usage.add_argument("--include-flow", action="store_true", help="同时检测 Google Flow 独立点数余额")
     _add_json_flag(p_usage)
+    _add_channel_flags(p_usage)
     p_usage.add_argument("--port", type=int, default=None)
 
     p_pg = sub.add_parser("playground", help="在 AI Studio Playground (对话/生图/生视频/Lyria音乐/TTS配音/Research) 运行")
@@ -4477,6 +4839,7 @@ def main() -> None:
     p_pg.add_argument("--timeout", type=int, default=180, help="同步等待超时秒数")
     p_pg.add_argument("--raw", action="store_true", help="仅输出纯文本回答")
     _add_json_flag(p_pg)
+    _add_channel_flags(p_pg)
     p_pg.add_argument("--port", type=int, default=None)
 
     p_attach = sub.add_parser("attach", help="仅将本地文件无弹窗挂载到已打开的 AI Studio / Gemini 对话标签页")
@@ -4484,6 +4847,7 @@ def main() -> None:
     p_attach.add_argument("--site", choices=["auto", "aistudio", "gemini"], default="auto", help="目标站点（默认自动识别）")
     p_attach.add_argument("--tab-hint", default="", help="目标会话 URL 或片段")
     _add_json_flag(p_attach)
+    _add_channel_flags(p_attach)
     p_attach.add_argument("--port", type=int, default=None)
 
     p_build = sub.add_parser("build", help="在 AI Studio Build 创建/迭代全套整站工程并下载 ZIP（简单任务请优先用 ask --entry task）")
@@ -4497,10 +4861,12 @@ def main() -> None:
     p_build.add_argument("--async-send", action="store_true", help="提交构建指令拿到项目 URL 后立即返回")
     p_build.add_argument("--timeout", type=int, default=300, help="等待构建完成超时秒数")
     _add_json_flag(p_build)
+    _add_channel_flags(p_build)
     p_build.add_argument("--port", type=int, default=None)
 
     p_fusage = sub.add_parser("flow-usage", help="检测 Google Flow (flow.google.com) 独立点数余额与重置时间")
     _add_json_flag(p_fusage)
+    _add_channel_flags(p_fusage)
     p_fusage.add_argument("--port", type=int, default=None)
 
     p_flow = sub.add_parser("flow", help="在 Google Flow (flow.google.com) 生成图片或视频（首选入口）")
@@ -4518,6 +4884,7 @@ def main() -> None:
     p_flow.add_argument("--async-send", action="store_true", help="提交后立即返回 project_url")
     p_flow.add_argument("--timeout", type=int, default=240, help="同步等待生成超时秒数")
     _add_json_flag(p_flow)
+    _add_channel_flags(p_flow)
     p_flow.add_argument("--port", type=int, default=None)
 
     p_harvest = sub.add_parser("harvest", help="从 Chrome 下载目录收割网页导出文件并可选解包 JSON Blob 到目标目录")
@@ -4560,33 +4927,43 @@ def main() -> None:
     p_tnet = sub.add_parser("task-net", help="检查或开关 gemini.google.com/gemini-spark 远程计算机网络访问权限（云 Linux 主机）")
     p_tnet.add_argument("action", nargs="?", choices=["status", "enable", "disable"], default="status", help="操作: status(默认) | enable | disable")
     _add_json_flag(p_tnet)
+    _add_channel_flags(p_tnet)
     p_tnet.add_argument("--port", type=int, default=None)
 
     p_doc = sub.add_parser("doctor", help="轻量全局体检：巡检通道状态、Gemini/Flow 额度与 gemini-spark 联网开关")
     p_doc.add_argument("--skip-flow", action="store_true", help="跳过 Flow 点数页面探测以加快速度")
     _add_json_flag(p_doc)
+    _add_channel_flags(p_doc)
     p_doc.add_argument("--port", type=int, default=None)
 
     p_mcp = sub.add_parser("mcp", help="启动零外部依赖原生 stdio MCP Server（兼容 Antigravity/Claude/Cursor）")
+    _add_channel_flags(p_mcp)
     p_mcp.add_argument("--port", type=int, default=None)
 
     args = parser.parse_args()
 
     if args.cmd == "mcp":
-        run_mcp_server(port_override=args.port)
+        run_mcp_server(port_override=args.port, channel=args.channel, browser_profile=args.browser_profile)
         return
 
     if args.cmd == "doctor":
-        res = execute_doctor(port_override=args.port, skip_flow=args.skip_flow)
+        res = execute_doctor(
+            port_override=args.port,
+            skip_flow=args.skip_flow,
+            channel=args.channel,
+            browser_profile=args.browser_profile,
+        )
         _print_result(res, False, as_json=args.as_json)
         return
 
     if args.cmd == "task-net":
-        res = _exec_cdp(
+        res = _exec_browser(
             args.port,
             "/task-net",
             {"action": args.action},
             lambda b: execute_task_network(b, action=args.action),
+            channel=args.channel,
+            browser_profile=args.browser_profile,
         )
         _print_result(res, False, as_json=args.as_json)
         return
@@ -4619,7 +4996,7 @@ def main() -> None:
             "stagger_sec": args.stagger,
             "resume": args.resume,
         }
-        res = _exec_cdp(
+        res = _exec_browser(
             args.port,
             "/wave",
             payload,
@@ -4634,6 +5011,8 @@ def main() -> None:
                 stagger_sec=args.stagger,
                 resume=args.resume,
             ),
+            channel=args.channel,
+            browser_profile=args.browser_profile,
         )
         _print_result(res, False, as_json=args.as_json)
         if res.get("succeeded", 0) == 0 and res.get("total", 0) > 0:
@@ -4716,7 +5095,7 @@ def main() -> None:
             "code_folder": args.folder,
             "github_repo": args.github,
         }
-        res = _exec_cdp(
+        res = _exec_browser(
             args.port,
             "/ask",
             payload,
@@ -4735,6 +5114,8 @@ def main() -> None:
                 code_folder=args.folder,
                 github_repo=args.github,
             ),
+            channel=args.channel,
+            browser_profile=args.browser_profile,
         )
         if args.role:
             execute_roster(
@@ -4754,11 +5135,13 @@ def main() -> None:
         return
 
     if args.cmd == "fetch":
-        res = _exec_cdp(
+        res = _exec_browser(
             args.port,
             "/fetch",
             {"tab_url_hint": args.tab_hint},
             lambda b: execute_fetch(b, tab_url_hint=args.tab_hint),
+            channel=args.channel,
+            browser_profile=args.browser_profile,
         )
         res = _write_text_output(res, args.out_file)
         _print_result(res, args.raw, ("answer",), as_json=args.as_json)
@@ -4766,22 +5149,46 @@ def main() -> None:
 
     if args.cmd == "usage":
         if args.include_flow:
-            res = call_daemon("/usage", {})
-            if res is not None:
-                res["flow"] = call_daemon("/flow-usage", {})
+            def _combined_usage(b):
+                u = execute_usage(b)
+                u["flow"] = execute_flow_usage(b)
+                return u
+
+            res_d = call_daemon("/usage", {}) if (args.channel != "a" and args.port is None) else None
+            if res_d is not None:
+                res_d["flow"] = call_daemon("/flow-usage", {})
+                res_d.setdefault("channel", "B_cdp")
+                res = res_d
             else:
-                ws_url = get_cdp_ws_url(args.port)
-                with _get_sync_playwright()() as p:
-                    browser = p.chromium.connect_over_cdp(ws_url, timeout=5000)
-                    res = execute_usage(browser)
-                    res["flow"] = execute_flow_usage(browser)
+                res = _exec_browser(
+                    args.port,
+                    "/usage",
+                    {},
+                    _combined_usage,
+                    channel=args.channel,
+                    browser_profile=args.browser_profile,
+                )
         else:
-            res = _exec_cdp(args.port, "/usage", {}, execute_usage)
+            res = _exec_browser(
+                args.port,
+                "/usage",
+                {},
+                execute_usage,
+                channel=args.channel,
+                browser_profile=args.browser_profile,
+            )
         _print_result(res, False, as_json=args.as_json)
         return
 
     if args.cmd == "flow-usage":
-        res = _exec_cdp(args.port, "/flow-usage", {}, execute_flow_usage)
+        res = _exec_browser(
+            args.port,
+            "/flow-usage",
+            {},
+            execute_flow_usage,
+            channel=args.channel,
+            browser_profile=args.browser_profile,
+        )
         _print_result(res, False, as_json=args.as_json)
         return
 
@@ -4817,7 +5224,7 @@ def main() -> None:
             "title": args.title,
             "fallback_model": args.fallback_model,
         }
-        res = _exec_cdp(
+        res = _exec_browser(
             args.port,
             "/playground",
             payload,
@@ -4839,6 +5246,8 @@ def main() -> None:
                 title=args.title,
                 fallback_model=args.fallback_model,
             ),
+            channel=args.channel,
+            browser_profile=args.browser_profile,
         )
         if args.role:
             execute_roster(
@@ -4866,7 +5275,7 @@ def main() -> None:
             "site": args.site,
             "tab_url_hint": args.tab_hint,
         }
-        res = _exec_cdp(
+        res = _exec_browser(
             args.port,
             "/attach",
             payload,
@@ -4876,6 +5285,8 @@ def main() -> None:
                 site=args.site,
                 tab_url_hint=args.tab_hint,
             ),
+            channel=args.channel,
+            browser_profile=args.browser_profile,
         )
         _print_result(res, False, as_json=args.as_json)
         return
@@ -4894,7 +5305,7 @@ def main() -> None:
             "async_send": args.async_send,
             "timeout_sec": args.timeout,
         }
-        res = _exec_cdp(
+        res = _exec_browser(
             args.port,
             "/build",
             payload,
@@ -4910,6 +5321,8 @@ def main() -> None:
                 async_send=args.async_send,
                 timeout_sec=args.timeout,
             ),
+            channel=args.channel,
+            browser_profile=args.browser_profile,
         )
         _print_result(res, False, as_json=args.as_json)
         return
@@ -4933,7 +5346,7 @@ def main() -> None:
             "async_send": args.async_send,
             "timeout_sec": args.timeout,
         }
-        res = _exec_cdp(
+        res = _exec_browser(
             args.port,
             "/flow",
             payload,
@@ -4951,6 +5364,8 @@ def main() -> None:
                 async_send=args.async_send,
                 timeout_sec=args.timeout,
             ),
+            channel=args.channel,
+            browser_profile=args.browser_profile,
         )
         if args.role:
             execute_roster(

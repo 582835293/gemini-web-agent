@@ -1,16 +1,18 @@
-# AgentLimb 精确参数表与四大渠道一键 JS 宏（默认零重登托底通道 A）
+# AgentLimb 高速直连指南与四大渠道一键 JS 宏（免重登日常 Chrome）
 
-> **通道定位与用户自选说明**：AgentLimb MCP（通道 A）**直接复用你日常 Chrome 已登录账号、无需新建浏览器目录重新登录、开箱即用最省心**，是本 Skill 的稳妥托底默认方案；缺点是受单步轮询限制，大型多员工并发工程耗时较长。**若希望提速 5~10 倍体验单命令 `wave` 并发，可向用户说明后由用户自己选择配置独立 AI Chrome Profile（需在新窗口自登一次，纯本地运行）**。
->
-> **环境与防坑**：本地推荐 `AgentLimb >= v0.8.2`（配置在 `~/.gemini/config/mcp_config.json`）。在三大站点严禁截图或调 `read_page` / `form_input` / `computer` 轮询；单次 `javascript_eval` 上限 **20s**，长任务发包与提取分开。
+> **通道提速与兼容性说明**：
+> 1. **优先单命令 HTTP Bridge 直连（`gemini_web.py --channel a` / `auto`）**：若本机 AgentLimb Host 已启用 `POST http://127.0.0.1:8765..8780/api/tool`（由 [scripts/agentlimb_bridge.py](../scripts/agentlimb_bridge.py) 自动探测），`gemini_web.py` 的 `doctor`、`usage`、`ask`、`playground`、`flow`、`task-net`、`wave` **全部可以直接单条命令直连日常 Chrome 运行**（零重登、零大模型中间往返，也不强制依赖 Playwright）。多 Chrome Profile 共存时可加 `--browser-profile "<id或label>"`。
+> 2. **标准 MCP 降级（`browser_batch` 打包加速）**：如果使用的是尚未开放 `/api/tool` 的原版 AgentLimb MCP，务必优先使用 **`browser_batch`**（单次 round-trip 最多连续执行 20 个动作，如 `tab_activate + javascript_eval` 或批量 `tab_new`），避免每步一次 LLM 推理往返。
+> 3. **防坑须知**：在三大站点严禁截图或调 `read_page` / `form_input` / `computer` 轮询；单次 `javascript_eval` 上限 **20s**，长任务发包与提取分开；使用 AgentLimb 时请确保日常 Chrome 至少有 1 个已打开的浏览器窗口（否则会报 `No current window`）。
 
-## 1. 六个必用 MCP 工具精确参数表（禁止猜错字段名）
+## 1. 高频必用 MCP 工具精确参数表（含 `browser_batch` 打包模板）
 
+- `browser_batch`: `{"actions": [{"tool": "tab_activate", "args": {"tabId": 123}}, {"tool": "javascript_eval", "args": {"tabId": 123, "expression": "..."}}]}` → **单次往返打包最多 20 步（强烈优先使用，大幅降低延迟）**。
 - `tab_new`: `{"url": "https://...", "active": false}` → 每个新员工角色必须开独立 Tab 并记下返回的 `tab.id`。
 - `tab_activate`: `{"tabId": 123}` → **提取结果、滚动或点击下载前必须先调用**（防后台 Tab 休眠冻结）。
 - `javascript_eval`: `{"tabId": 123, "expression": "..."}` → **参数名是 `expression`（禁止写 `script`）**！
 - `wait`: `{"tabId": 123, "condition": "page_contains", "text": "Response ready.", "timeout": 30000}`（或 `"hidden"` 等 `Stop` 消失）→ **参数名是 `timeout`（禁止写 `ms`）**。
-- `tab_close` / `say`: `{"tabId": 123}` / `{"text": "完成摘要"}`（结束后务必调 `say` 释放面板）。
+- `tab_close` / `say`: `{"tabId": 123}` / `{"text": "完成摘要"}`（侧栏交互结束后调 `say` 释放面板）。
 
 ## 2. AI Studio Playground：带 ROLE 锁发包 + 自动下载 `bundle-<role>.json` 宏
 

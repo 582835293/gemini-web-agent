@@ -674,6 +674,21 @@ def _resolve_desktop_dir(sys_name: str | None = None, home: Path | None = None) 
     return desktop if desktop.exists() else home_dir
 
 
+def get_downloads_dir(home: Path | None = None, sys_name: str | None = None) -> Path:
+    """跨平台定位浏览器默认下载目录（兼容中文 Linux XDG_DOWNLOAD_DIR=~/下载）。"""
+    home_dir = home or Path.home()
+    sys_low = (sys_name or platform.system()).lower()
+    if sys_low == "linux":
+        xdg_dl = _read_linux_xdg_user_dir("XDG_DOWNLOAD_DIR", home_dir)
+        if xdg_dl is not None:
+            return xdg_dl
+        zh_dl = home_dir / "下载"
+        if zh_dl.is_dir():
+            return zh_dl
+    dl = home_dir / "Downloads"
+    return dl if dl.exists() else home_dir
+
+
 def create_ai_chrome_shortcut(
     chrome_exe: str,
     profile_dir: Path | str,
