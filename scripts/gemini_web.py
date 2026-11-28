@@ -3536,22 +3536,28 @@ def run_daemon(port_override: int | None = None, bind_port: int = DAEMON_PORT) -
 
 
 def call_daemon(path: str, payload: dict, bind_port: int = DAEMON_PORT) -> dict | None:
-    """绕过代理直连本地 daemon；daemon 未运行返回 None。"""
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(
-        f"http://{DAEMON_HOST}:{bind_port}{path}",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST",
-    )
+    """绕过代理直连本地 daemon（极短 TCP 建连超时快败 + 建连后长读超时）；daemon 未运行返回 None。"""
+    import http.client
+
+    conn = http.client.HTTPConnection(DAEMON_HOST, int(bind_port), timeout=0.25)
     try:
-        with opener.open(req, timeout=payload.get("timeout_sec", 180) + 35) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"daemon 返回错误 ({e.code}): {detail}") from e
-    except urllib.error.URLError:
+        conn.connect()
+        if conn.sock is not None:
+            conn.sock.settimeout(float(payload.get("timeout_sec", 180)) + 35.0)
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json; charset=utf-8"})
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8", errors="replace")
+        if resp.status >= 400:
+            raise RuntimeError(f"daemon 返回错误 ({resp.status}): {raw}")
+        return json.loads(raw)
+    except (OSError, http.client.HTTPException):
         return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _can_use_channel_b_quickly(port_override: int | None = None) -> bool:
@@ -3559,10 +3565,11 @@ def _can_use_channel_b_quickly(port_override: int | None = None) -> bool:
     if port_override is not None:
         return True
     pu = _import_platform_utils()
-    if pu.probe_cdp_http(pu.AI_CHROME_DEFAULT_PORT, timeout_sec=0.8):
+    if pu.probe_cdp_http(pu.AI_CHROME_DEFAULT_PORT, timeout_sec=0.5):
         return True
     if hasattr(pu, "is_ai_chrome_configured") and pu.is_ai_chrome_configured():
         return True
+    checked_ports: set[int] = {int(pu.AI_CHROME_DEFAULT_PORT)}
     for active_port_file in _iter_devtools_active_port_files():
         if not active_port_file.exists():
             continue
@@ -3571,8 +3578,13 @@ def _can_use_channel_b_quickly(port_override: int | None = None) -> bool:
             for ln in active_port_file.read_text(encoding="utf-8", errors="ignore").splitlines()
             if ln.strip()
         ]
-        if len(lines) >= 2 and lines[0].isdigit() and pu.probe_cdp_http(int(lines[0]), timeout_sec=0.6):
-            return True
+        if len(lines) >= 2 and lines[0].isdigit():
+            p_num = int(lines[0])
+            if p_num in checked_ports:
+                continue
+            checked_ports.add(p_num)
+            if pu.probe_cdp_http(p_num, timeout_sec=0.4):
+                return True
     return False
 
 

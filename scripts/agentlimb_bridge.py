@@ -30,9 +30,12 @@ DEFAULT_AGENTLIMB_PORTS: list[int] = list(range(8765, 8781))
 DEFAULT_HOST = "127.0.0.1"
 
 
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _build_direct_opener():
-    """构建绕过系统代理的本地 HTTP opener，避免 127.0.0.1 误走 HTTP_PROXY。"""
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    """返回复用缓存的直连 HTTP opener（绕过系统代理，避免 127.0.0.1 误走 HTTP_PROXY 且消除重复构建开销）。"""
+    return _DIRECT_OPENER
 
 
 def _http_json(
@@ -79,7 +82,7 @@ def _translate_bridge_error(message: str) -> str:
 
 def probe_agentlimb_port(
     port: int,
-    timeout_sec: float = 0.45,
+    timeout_sec: float = 0.25,
     check_api_tool: bool = False,
 ) -> dict | None:
     """探测单个本地 AgentLimb Bridge 端口 `/health` 与可选 `/api/tool` 支持情况。"""
@@ -136,7 +139,7 @@ def discover_agentlimb_bridge(
     check_api_tool: bool = True,
     ports: list[int] | None = None,
 ) -> dict:
-    """扫描本地 AgentLimb Bridge 候选端口，优先返回已授权且支持 `/api/tool` 的实例。"""
+    """并发扫描本地 AgentLimb Bridge 候选端口，优先返回已授权且支持 `/api/tool` 的实例。"""
     if port_override is not None:
         candidate_ports = [int(port_override)]
     else:
@@ -148,10 +151,22 @@ def discover_agentlimb_bridge(
             candidate_ports = list(ports or DEFAULT_AGENTLIMB_PORTS)
 
     found: list[dict] = []
-    for p in candidate_ports:
-        res = probe_agentlimb_port(p, timeout_sec=0.35, check_api_tool=check_api_tool)
-        if res is not None:
-            found.append(res)
+    if len(candidate_ports) <= 1:
+        for p in candidate_ports:
+            res = probe_agentlimb_port(p, timeout_sec=0.25, check_api_tool=check_api_tool)
+            if res is not None:
+                found.append(res)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(16, len(candidate_ports))) as executor:
+            results = executor.map(
+                lambda p: probe_agentlimb_port(p, timeout_sec=0.25, check_api_tool=check_api_tool),
+                candidate_ports,
+            )
+            for res in results:
+                if res is not None:
+                    found.append(res)
 
     if not found:
         return {

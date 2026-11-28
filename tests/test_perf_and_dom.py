@@ -234,5 +234,106 @@ console.log(JSON.stringify(result));
         self.assertTrue(res["isIdleUI"])
 
 
+class TestConnectionAndDiscoveryBenchmarks(unittest.TestCase):
+    """c) AgentLimb Bridge 并发端口探测与 daemon 快速失败连接性能测试。"""
+
+    def test_parallel_bridge_discovery_and_fast_fail_daemon(self) -> None:
+        import http.server
+        import socket
+        import socketserver
+        import threading
+
+        scripts_dir = str(REPO_ROOT / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import agentlimb_bridge as ab
+        import gemini_web as gw
+
+        # 申请 1 个存活 mock Bridge + 15 个空闲关闭端口，组成 16 端口扫描压测
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                return
+
+            def _send(self, code: int, payload: dict):
+                raw = json.dumps(payload).encode("utf-8")
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self):
+                if self.path == "/health":
+                    self._send(200, {
+                        "ok": True,
+                        "service": "agentlimb-bridge",
+                        "port": self.server.server_address[1],
+                        "authorized": True,
+                        "stage": "ready",
+                        "browsers": 1,
+                    })
+                    return
+                self._send(404, {"ok": False})
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                _ = self.rfile.read(length) if length else b""
+                if self.path == "/api/tool":
+                    self._send(200, {"ok": True, "result": {"result": {"ok": True, "pong": True}}})
+                    return
+                if self.path == "/ok":
+                    self._send(200, {"status": "ok", "pong": True})
+                    return
+                self._send(500, {"error": "boom"})
+
+        class _Srv(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            allow_reuse_address = True
+
+        srv = _Srv(("127.0.0.1", 0), _Handler)
+        live_port = srv.server_address[1]
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+
+        closed_ports: list[int] = []
+        sockets: list[socket.socket] = []
+        try:
+            for _ in range(15):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind(("127.0.0.1", 0))
+                closed_ports.append(s.getsockname()[1])
+                sockets.append(s)
+        finally:
+            for s in sockets:
+                s.close()
+
+        try:
+            test_ports = closed_ports + [live_port]
+            t0 = time.perf_counter()
+            info = ab.discover_agentlimb_bridge(ports=test_ports, check_api_tool=True)
+            disc_ms = (time.perf_counter() - t0) * 1000
+            print(f"\n[Benchmark] discover_agentlimb_bridge 并发 16 端口扫描: {disc_ms:.1f} ms")
+            self.assertTrue(info["running"])
+            self.assertEqual(info["port"], live_port)
+            self.assertTrue(info["api_tool_supported"])
+            self.assertLess(disc_ms, 1200.0, f"并发 16 端口探测耗时 {disc_ms:.1f} ms 过高")
+
+            # daemon 正常 200 返回与 HTTP 500 错误语义校验
+            ok_res = gw.call_daemon("/ok", {"timeout_sec": 1}, bind_port=live_port)
+            self.assertEqual(ok_res, {"status": "ok", "pong": True})
+            with self.assertRaises(RuntimeError):
+                gw.call_daemon("/fail", {"timeout_sec": 1}, bind_port=live_port)
+
+            # daemon 未开启时应快速失败返回 None（原版需 ~2045 ms）
+            t1 = time.perf_counter()
+            miss = gw.call_daemon("/doctor", {"skip_flow": True}, bind_port=closed_ports[0])
+            fail_ms = (time.perf_counter() - t1) * 1000
+            print(f"[Benchmark] call_daemon 未运行快败耗时: {fail_ms:.1f} ms")
+            self.assertIsNone(miss)
+            self.assertLess(fail_ms, 800.0, f"call_daemon 未运行快败耗时 {fail_ms:.1f} ms 过高")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -75,15 +75,28 @@ def get_ai_chrome_profile_dir(home: Path | None = None, custom_dir: str = "") ->
 
 
 def probe_cdp_http(port: int | str, timeout_sec: float = 1.2) -> dict | None:
-    """绕过系统代理探测指定端口的 Chrome CDP /json/version；就绪返回 JSON 字典，否则 None。"""
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/json/version", method="GET")
+    """绕过系统代理直连探测指定端口的 Chrome CDP /json/version（分离建连短超时与读超时）；就绪返回 JSON 字典，否则 None。"""
+    import http.client
+
+    conn = None
     try:
-        with opener.open(req, timeout=timeout_sec) as resp:
-            if resp.status == 200:
-                return json.loads(resp.read().decode("utf-8", errors="replace"))
+        read_timeout = max(0.25, float(timeout_sec))
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=min(0.25, read_timeout))
+        conn.connect()
+        if conn.sock is not None:
+            conn.sock.settimeout(read_timeout)
+        conn.request("GET", "/json/version")
+        resp = conn.getresponse()
+        if resp.status == 200:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
     except Exception:
         return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return None
 
 
