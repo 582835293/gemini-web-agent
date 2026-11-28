@@ -3593,20 +3593,28 @@ def _exec_browser(
     if port is not None:
         ch = "b"
 
-    def _run_via_agentlimb(bridge_port: int | None = None) -> dict:
+    def _run_via_agentlimb(bridge_port: int | None = None, bridge_info: dict | None = None) -> dict:
         ab = _import_agentlimb_bridge()
-        browser = ab.connect_agentlimb_bridge(browser_profile=b_prof, port_override=bridge_port)
+        try:
+            browser = ab.connect_agentlimb_bridge(
+                browser_profile=b_prof,
+                port_override=bridge_port,
+                bridge_info=bridge_info,
+            )
+        except TypeError:
+            browser = ab.connect_agentlimb_bridge(browser_profile=b_prof, port_override=bridge_port)
         res_a = local_fn(browser)
         if isinstance(res_a, dict):
             res_a.setdefault("channel", "A_agentlimb_bridge")
         return res_a
 
-    def _run_via_cdp() -> dict:
-        res_d = call_daemon(path, payload)
-        if res_d is not None:
-            if isinstance(res_d, dict):
-                res_d.setdefault("channel", "B_cdp")
-            return res_d
+    def _run_via_cdp(skip_daemon: bool = False) -> dict:
+        if not skip_daemon:
+            res_d = call_daemon(path, payload)
+            if res_d is not None:
+                if isinstance(res_d, dict):
+                    res_d.setdefault("channel", "B_cdp")
+                return res_d
         ws_url = get_cdp_ws_url(port)
         with _get_sync_playwright()() as p:
             browser = p.chromium.connect_over_cdp(ws_url, timeout=5000)
@@ -3628,14 +3636,14 @@ def _exec_browser(
         return res_d
 
     if _can_use_channel_b_quickly(port):
-        return _run_via_cdp()
+        return _run_via_cdp(skip_daemon=True)
 
     ab = _import_agentlimb_bridge()
     bridge_info = ab.discover_agentlimb_bridge(check_api_tool=True)
     if bridge_info.get("running") and bridge_info.get("authorized") and bridge_info.get("api_tool_supported"):
-        return _run_via_agentlimb(bridge_port=bridge_info.get("port"))
+        return _run_via_agentlimb(bridge_port=bridge_info.get("port"), bridge_info=bridge_info)
 
-    return _run_via_cdp()
+    return _run_via_cdp(skip_daemon=True)
 
 
 def _exec_cdp(port: int | None, path: str, payload: dict, local_fn) -> dict:

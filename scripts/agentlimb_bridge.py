@@ -884,6 +884,16 @@ class AgentLimbLocator:
         AgentLimbFileChooser(self._page).set_files(files)
 
 
+def _tab_id_matches(tab_obj: object, target_tab_id: int) -> bool:
+    """安全匹配 tab id（避免 tabId == 0 时被 `or -1` 误改）。"""
+    if not isinstance(tab_obj, dict) or tab_obj.get("id") is None:
+        return False
+    try:
+        return int(tab_obj["id"]) == target_tab_id
+    except (TypeError, ValueError):
+        return False
+
+
 class AgentLimbPage:
     """兼容 Playwright `Page` 的轻量代理，底层通过 AgentLimb `/api/tool` 通信。"""
 
@@ -915,7 +925,7 @@ class AgentLimbPage:
                 if isinstance(res, dict):
                     tabs = res.get("tabs") if isinstance(res.get("tabs"), list) else ([res.get("tab")] if res.get("tab") else [])
                     for t in tabs:
-                        if isinstance(t, dict) and int(t.get("id") or -1) == self.tab_id and t.get("url"):
+                        if _tab_id_matches(t, self.tab_id) and t.get("url"):
                             self._url = str(t["url"])
                             self._url_ts = time.time()
                             break
@@ -997,7 +1007,7 @@ class AgentLimbPage:
                     if isinstance(t_res, dict):
                         tabs = t_res.get("tabs") if isinstance(t_res.get("tabs"), list) else ([t_res.get("tab")] if t_res.get("tab") else [])
                         for t in tabs:
-                            if isinstance(t, dict) and int(t.get("id") or -1) == self.tab_id and t.get("url"):
+                            if _tab_id_matches(t, self.tab_id) and t.get("url"):
                                 cur_u = str(t["url"])
                                 break
                 except Exception:
@@ -1036,7 +1046,7 @@ class AgentLimbPage:
             res = self.bridge.call_tool("tabs_context", {"tabId": self.tab_id}, timeout_ms=8000)
             if isinstance(res, dict):
                 tabs = res.get("tabs")
-                if isinstance(tabs, list) and not any(int(t.get("id") or -1) == self.tab_id for t in tabs):
+                if isinstance(tabs, list) and not any(_tab_id_matches(t, self.tab_id) for t in tabs):
                     self._closed = True
         except Exception:
             pass
@@ -1176,7 +1186,11 @@ class AgentLimbContext:
         tid = None
         init_url = url
         if isinstance(res, dict):
-            tid = res.get("tabId") or res.get("id") or (res.get("tab") or {}).get("id")
+            tid = res.get("tabId")
+            if tid is None:
+                tid = res.get("id")
+            if tid is None and isinstance(res.get("tab"), dict):
+                tid = res["tab"].get("id")
             init_url = str(res.get("url") or (res.get("tab") or {}).get("url") or url)
         if tid is None:
             raise RuntimeError(f"AgentLimb tab_new 未返回有效 tabId: {res}")
@@ -1221,9 +1235,13 @@ class AgentLimbBrowser:
 def connect_agentlimb_bridge(
     browser_profile: str = "",
     port_override: int | None = None,
+    bridge_info: dict | None = None,
 ) -> AgentLimbBrowser:
-    """探测并连接本机运行中的 AgentLimb HTTP Bridge (`/api/tool`)。"""
-    info = discover_agentlimb_bridge(port_override=port_override, check_api_tool=True)
+    """探测并连接本机运行中的 AgentLimb HTTP Bridge (`/api/tool`)；传入已知 bridge_info 时免重复探测。"""
+    info = bridge_info if isinstance(bridge_info, dict) and bridge_info else discover_agentlimb_bridge(
+        port_override=port_override,
+        check_api_tool=True,
+    )
     if not info.get("running"):
         raise RuntimeError(
             "未检测到正在运行的 AgentLimb Bridge (127.0.0.1:8765..8780)。"

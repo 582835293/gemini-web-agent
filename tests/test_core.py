@@ -1052,6 +1052,87 @@ class TestHighSpeedChannelBAndWave(unittest.TestCase):
             finally:
                 gw.SESSION_STATE_FILE = old_sf
 
+    def test_v14_update_failure_cooldown_exec_browser_dedup_and_tab_zero(self) -> None:
+        """验证更新检测失败冷却缓存、_exec_browser 去重探测与 tabId=0 边界处理。"""
+        from unittest.mock import patch
+        import agentlimb_bridge as ab
+
+        # 1. check_for_updates 失败应写入冷却期，cache_hours>0 时不再重复联网，cache_hours=0 时强制重检
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ss._write_version_meta(root, REPO_ROOT, commit="abc1234", last_checked_at="2020-01-01T00:00:00+00:00")
+            with patch.object(ss, "_fetch_remote_head", return_value=("", "", "simulated timeout")) as mock_fetch:
+                r1 = ss.check_for_updates(root, REPO_ROOT, cache_hours=24.0)
+                self.assertEqual(mock_fetch.call_count, 1)
+                self.assertTrue(r1["checked_network"])
+                self.assertEqual(r1["error"], "simulated timeout")
+
+                r2 = ss.check_for_updates(root, REPO_ROOT, cache_hours=24.0)
+                self.assertEqual(mock_fetch.call_count, 1)
+                self.assertTrue(r2["cache_hit"])
+                self.assertEqual(r2["error"], "simulated timeout")
+
+            with patch.object(ss, "_fetch_remote_head", return_value=("def5678", "ok", "")) as mock_fetch_ok:
+                r3 = ss.check_for_updates(root, REPO_ROOT, cache_hours=0.0)
+                self.assertEqual(mock_fetch_ok.call_count, 1)
+                self.assertEqual(r3["remote_commit"], "def5678")
+                self.assertIsNone(r3["error"])
+                meta_after = ss._read_version_meta(root)
+                self.assertNotIn("last_error_at", meta_after)
+
+        # 2. _exec_browser(channel='auto') 在 call_daemon 返回 None 且 B 快速就绪时不重复调 call_daemon
+        mock_page = MagicMock()
+        mock_browser = MagicMock()
+        mock_pw_ctx = MagicMock()
+        mock_pw_ctx.__enter__.return_value.chromium.connect_over_cdp.return_value = mock_browser
+        with (
+            patch.object(gw, "call_daemon", return_value=None) as m_daemon,
+            patch.object(gw, "_can_use_channel_b_quickly", return_value=True),
+            patch.object(gw, "get_cdp_ws_url", return_value="ws://127.0.0.1:9229/devtools/browser/x"),
+            patch.object(gw, "_get_sync_playwright", return_value=lambda: mock_pw_ctx),
+        ):
+            res_b = gw._exec_browser(
+                port=None,
+                path="/usage",
+                payload={},
+                local_fn=lambda b: {"status": "ok", "page": mock_page is not None},
+                channel="auto",
+            )
+        self.assertEqual(m_daemon.call_count, 1)
+        self.assertEqual(res_b["channel"], "B_cdp")
+
+        # 3. _exec_browser 复用已知 bridge_info，不再次触发 discover_agentlimb_bridge
+        fake_info = {"running": True, "authorized": True, "api_tool_supported": True, "port": 8765, "base_url": "http://127.0.0.1:8765"}
+        with (
+            patch.object(gw, "call_daemon", return_value=None),
+            patch.object(gw, "_can_use_channel_b_quickly", return_value=False),
+            patch.object(ab, "discover_agentlimb_bridge", return_value=fake_info) as m_disc,
+        ):
+            res_a = gw._exec_browser(
+                port=None,
+                path="/usage",
+                payload={},
+                local_fn=lambda b: {"status": "ok", "port": b.bridge.port},
+                channel="auto",
+            )
+        self.assertEqual(m_disc.call_count, 1)
+        self.assertEqual(res_a["port"], 8765)
+        self.assertEqual(res_a["channel"], "A_agentlimb_bridge")
+
+        # 4. AgentLimb tabId=0 边界匹配与 new_page 创建
+        fake_bridge = MagicMock()
+        fake_bridge.call_tool.side_effect = [
+            {"tabId": 0, "url": "https://gemini.google.com/app"},
+            {"tabs": [{"id": 0, "url": "https://gemini.google.com/app/zero"}]},
+            {"tabs": []},
+        ]
+        al_browser = ab.AgentLimbBrowser(fake_bridge)
+        p0 = al_browser.contexts[0].new_page()
+        self.assertEqual(p0.tab_id, 0)
+        p0._url = ""
+        self.assertEqual(p0.url, "https://gemini.google.com/app/zero")
+        self.assertTrue(p0.is_closed())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

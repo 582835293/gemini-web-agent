@@ -124,24 +124,34 @@ def ensure_venv_and_deps(skill_dir: Path, skip_pip: bool = False) -> dict:
     pip_error = ""
     if not deps_ok and not skip_pip:
         req = skill_dir / "requirements.txt"
-        cmd = [str(py), "-m", "pip", "install", "-q", "-r", str(req)]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
+        cmd = [str(py), "-m", "pip", "install", "--disable-pip-version-check", "-q", "-r", str(req)]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            rc = proc.returncode
+            err_main = proc.stderr or ""
+        except subprocess.TimeoutExpired:
+            rc = 1
+            err_main = "pip install 超时 (>90s)"
+        if rc != 0:
             # 若默认源较慢或失败，自动尝试清华镜像兜底
             mirror_cmd = [
                 str(py),
                 "-m",
                 "pip",
                 "install",
+                "--disable-pip-version-check",
                 "-q",
                 "-i",
                 "https://pypi.tuna.tsinghua.edu.cn/simple",
                 "-r",
                 str(req),
             ]
-            proc2 = subprocess.run(mirror_cmd, capture_output=True, text=True)
-            if proc2.returncode != 0:
-                pip_error = (proc2.stderr or proc.stderr or "").strip()
+            try:
+                proc2 = subprocess.run(mirror_cmd, capture_output=True, text=True, timeout=90)
+                if proc2.returncode != 0:
+                    pip_error = (proc2.stderr or err_main).strip()
+            except subprocess.TimeoutExpired:
+                pip_error = f"{err_main}; 清华镜像兜底亦超时 (>90s)".strip("; ")
         deps_ok = check_imports()
         installed_now = deps_ok
 
@@ -374,54 +384,139 @@ def _write_version_meta(skill_dir: Path, source_root: Path, commit: str = "", la
     return meta
 
 
-def _fetch_remote_head(timeout_sec: float = 4.0) -> tuple[str, str, str]:
-    """返回 (remote_commit_short, commit_message, error_msg)。优先 GitHub API，兜底 git ls-remote。"""
-    api_url = f"https://api.github.com/repos/{REPO_SLUG}/commits/{DEFAULT_BRANCH}"
-    req = urllib.request.Request(
-        api_url,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "gemini-web-agent-updater"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-            sha = str(data.get("sha", ""))[:7]
-            msg = str(data.get("commit", {}).get("message", "")).splitlines()[0]
-            if sha:
-                return sha, msg, ""
-    except Exception as api_err:
-        err_msg = str(api_err)
-    else:
-        err_msg = "GitHub API 未返回 sha"
+def _detect_reachable_proxy_url() -> str:
+    """探测环境变量或系统代理设置，并在本机回环代理端口实际可达时返回代理 URL。"""
+    import socket
 
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            return val
     try:
-        proc = subprocess.run(
-            ["git", "ls-remote", REPO_URL, f"refs/heads/{DEFAULT_BRANCH}"],
-            capture_output=True,
-            text=True,
-            timeout=int(max(timeout_sec, 5)),
+        proxies = urllib.request.getproxies()
+    except Exception:
+        proxies = {}
+    candidate = str(proxies.get("https") or proxies.get("http") or "").strip()
+    if not candidate:
+        return ""
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(candidate)
+        if parsed.hostname in ("127.0.0.1", "localhost") and parsed.port:
+            with socket.create_connection((parsed.hostname, parsed.port), timeout=0.15):
+                return candidate
+            return ""
+    except Exception:
+        return ""
+    return candidate
+
+
+def _fetch_remote_head(timeout_sec: float = 4.0) -> tuple[str, str, str]:
+    """返回 (remote_commit_short, commit_message, error_msg)。用守护线程并发竞速 GitHub API 与 git ls-remote，绝不阻塞进程退出。"""
+    import threading
+
+    deadline_sec = max(2.0, float(timeout_sec))
+    api_url = f"https://api.github.com/repos/{REPO_SLUG}/commits/{DEFAULT_BRANCH}"
+    proxy_url = _detect_reachable_proxy_url()
+
+    def _query_api() -> tuple[str, str, str]:
+        req = urllib.request.Request(
+            api_url,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "gemini-web-agent-updater"},
         )
-        if proc.returncode == 0 and proc.stdout.strip():
-            sha = proc.stdout.strip().split()[0][:7]
-            return sha, "", ""
-        if proc.stderr.strip():
-            err_msg = proc.stderr.strip()
-    except Exception as git_err:
-        err_msg = f"{err_msg}; {git_err}"
-    return "", "", err_msg
+        try:
+            with urllib.request.urlopen(req, timeout=deadline_sec) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                sha = str(data.get("sha", ""))[:7]
+                msg = str(data.get("commit", {}).get("message", "")).splitlines()[0]
+                if sha:
+                    return sha, msg, ""
+            return "", "", "GitHub API 未返回 sha"
+        except Exception as api_err:
+            return "", "", str(api_err)
+
+    def _query_git() -> tuple[str, str, str]:
+        git_cmd = ["git"]
+        if platform.system().lower().startswith("win"):
+            git_cmd.extend(["-c", "http.sslBackend=schannel"])
+        if proxy_url and not any(os.environ.get(k) for k in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")):
+            git_cmd.extend(["-c", f"http.proxy={proxy_url}"])
+        git_cmd.extend(["ls-remote", REPO_URL, f"refs/heads/{DEFAULT_BRANCH}"])
+        try:
+            proc = subprocess.run(
+                git_cmd,
+                capture_output=True,
+                text=True,
+                timeout=max(3.0, deadline_sec + 1.0),
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                sha = proc.stdout.strip().split()[0][:7]
+                return sha, "", ""
+            return "", "", (proc.stderr or proc.stdout or "git ls-remote 返回为空").strip()
+        except Exception as git_err:
+            return "", "", str(git_err)
+
+    lock = threading.Lock()
+    done_evt = threading.Event()
+    winner: list[tuple[str, str, str]] = []
+    errors: list[str] = []
+    finished_cnt = [0]
+
+    def _worker(fn) -> None:
+        try:
+            sha, msg, err = fn()
+        except Exception as exc:
+            sha, msg, err = "", "", str(exc)
+        with lock:
+            if sha and not winner:
+                winner.append((sha, msg, ""))
+                done_evt.set()
+            elif err:
+                errors.append(err)
+            finished_cnt[0] += 1
+            if finished_cnt[0] >= 2:
+                done_evt.set()
+
+    for fn in (_query_git, _query_api):
+        t = threading.Thread(target=_worker, args=(fn,), daemon=True)
+        t.start()
+
+    done_evt.wait(timeout=max(3.5, deadline_sec + 1.5))
+    with lock:
+        if winner:
+            return winner[0]
+        if finished_cnt[0] < 2 and not errors:
+            errors.append(f"更新检测总超时 ({deadline_sec:.1f}s)")
+        return "", "", "; ".join(errors) if errors else "未知网络错误"
+
+
+def _persist_version_meta_safe(target_meta_dir: Path, meta: dict) -> None:
+    try:
+        target_meta_dir.mkdir(parents=True, exist_ok=True)
+        (target_meta_dir / VERSION_FILE_NAME).write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
 
 
 def check_for_updates(skill_dir: Path, source_root: Path, cache_hours: float = 0.0) -> dict:
-    """检测 GitHub 远端 main 分支是否有更新。cache_hours>0 时命中缓存则跳过联网。"""
+    """检测 GitHub 远端 main 分支是否有更新。cache_hours>0 时命中成功缓存或失败冷却窗口则跳过联网。"""
     meta = _read_version_meta(skill_dir)
     if not meta:
         meta = _read_version_meta(source_root)
     local_commit = _get_git_commit(source_root) or meta.get("installed_commit", "")
     last_checked = meta.get("last_checked_at", "")
+    last_error_at = meta.get("last_error_at", "")
+    now_dt = datetime.now(timezone.utc)
 
     if cache_hours > 0 and last_checked:
         try:
             last_dt = datetime.fromisoformat(last_checked.replace("Z", "+00:00"))
-            age_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600.0
+            age_hours = (now_dt - last_dt).total_seconds() / 3600.0
             if age_hours < cache_hours:
                 return {
                     "checked_network": False,
@@ -437,18 +532,41 @@ def check_for_updates(skill_dir: Path, source_root: Path, cache_hours: float = 0
         except Exception:
             pass
 
+    if cache_hours > 0 and last_error_at:
+        try:
+            err_dt = datetime.fromisoformat(last_error_at.replace("Z", "+00:00"))
+            err_age_hours = (now_dt - err_dt).total_seconds() / 3600.0
+            err_cooldown_hours = min(float(cache_hours), 1.0)
+            if err_age_hours < err_cooldown_hours:
+                cached_remote = meta.get("remote_commit") or None
+                return {
+                    "checked_network": False,
+                    "cache_hit": True,
+                    "cache_age_hours": round(err_age_hours, 2),
+                    "local_commit": local_commit or None,
+                    "remote_commit": cached_remote,
+                    "has_update": bool(
+                        local_commit and cached_remote and not local_commit.startswith(cached_remote[:7])
+                    ),
+                    "error": meta.get("last_error") or "最近更新检查失败（处于失败冷却缓存窗口）",
+                    "update_command": f'python "{Path(__file__).resolve()}" --update',
+                }
+        except Exception:
+            pass
+
     remote_sha, remote_msg, err = _fetch_remote_head()
     now_iso = datetime.now(timezone.utc).isoformat()
+    target_meta_dir = skill_dir if skill_dir.exists() else source_root
     if remote_sha:
         meta["remote_commit"] = remote_sha
         meta["last_checked_at"] = now_iso
-        target_meta_dir = skill_dir if skill_dir.exists() else source_root
-        try:
-            (target_meta_dir / VERSION_FILE_NAME).write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except Exception:
-            pass
+        meta.pop("last_error", None)
+        meta.pop("last_error_at", None)
+        _persist_version_meta_safe(target_meta_dir, meta)
+    elif err:
+        meta["last_error"] = err
+        meta["last_error_at"] = now_iso
+        _persist_version_meta_safe(target_meta_dir, meta)
 
     has_update = bool(remote_sha and (not local_commit or not local_commit.startswith(remote_sha[:7])))
     return {
